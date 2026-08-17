@@ -55,3 +55,10 @@ Address = 0xfa041470 (filename not found)
 
 Solution:
 Compile everything from scratch like in [BUILD.md](./BUILD.md)
+
+# Setting up the editor
+
+```sh
+wine OLGame.exe editor -NoGADWarning
+WINEDLLOVERRIDES="d3d8=b;d3d9=b;d3d10core=b;d3d11=b;dxgi=b" wine OLGame.exe editor -NoGADWarning # To force WineD3D
+```
