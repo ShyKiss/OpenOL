@@ -14,6 +14,10 @@ var localized string NewGameIntroText;
 var localized string ChaptersText;
 var localized string StartDLCText;
 var localized string PressStartText;
+var localized string GameSelectTitleText;
+var localized string GameSelectMainText;
+var localized string GameSelectDLCText;
+var localized string GameSelectBodyText;
 
 var transient GFxClikWidget ButtonBar;
 var transient GFxClikWidget IntroLabel;
@@ -24,6 +28,7 @@ var transient GFxClikWidget GamertagContainer;
 
 var int ContinueButtonIndex;
 var int StartButtonIndex;
+var int NewGameButtonIndex;
 var int StartDLCButtonIndex;
 var int LoadButtonIndex;
 var int OptionsButtonIndex;
@@ -48,6 +53,8 @@ function OnViewLoaded()
 	bOnPressStartScreen = false;
 
 	SetFunction("OnBadCheckpointMsgAcknowledged", self, nameof(OnBadCheckpointMsgAcknowledged));
+	SetFunction("OnMainGameSelected", self, nameof(OnMainGameSelected));
+	SetFunction("OnDLCSelected", self, nameof(OnDLCSelected));
 }
 
 /** 
@@ -230,13 +237,42 @@ function GameLoadedCallback(bool bSuccess)
 	}
 }
 
+private final function OnNewGameButtonPress(GFxClikWidget.EventData ev)
+{
+	ASShowGameSelectDialog(GameSelectTitleText, GameSelectBodyText, GameSelectMainText, GameSelectDLCText);
+}
+
+function OnMainGameSelected()
+{
+	GetOLPC().ClearAllProgress();
+	StartCPName = "StartGame";
+	bShowIntroMsg = true;
+	DifficultySelectionView.bSpecificChapter = false;
+	MenuManager.PushViewByName('DifficultySelectionScreen');
+}
+
+function OnDLCSelected()
+{
+	local OLEngine Engine;
+
+	Engine = OLEngine(class'Engine'.static.GetEngine());
+	if (Engine != None && Engine.TryStartDLCGame())
+	{
+		GetOLPC().ClearAllProgress();
+		StartCPName = "DLC_Start";
+		bShowIntroMsg = false;
+		DifficultySelectionView.bSpecificChapter = false;
+		MenuManager.PushViewByName('DifficultySelectionScreen');
+	}
+}
+
 private final function OnStartButtonPress(GFxClikWidget.EventData ev)
 {
 	GetOLPC().ClearAllProgress(); // shouldn't be necessary, but just to make sure
 	StartCPName = "StartGame";
 	bShowIntroMsg = true;
 	DifficultySelectionView.bSpecificChapter = false;
-	MenuManager.PushViewByName('DifficultySelectionScreen'); 
+	MenuManager.PushViewByName('DifficultySelectionScreen');
 }
 
 private final function OnStartDLCButtonPress(GFxClikWidget.EventData ev)
@@ -250,7 +286,7 @@ private final function OnStartDLCButtonPress(GFxClikWidget.EventData ev)
 		StartCPName = "DLC_Start";
 		bShowIntroMsg = false;
 		DifficultySelectionView.bSpecificChapter = false;
-		MenuManager.PushViewByName('DifficultySelectionScreen'); 
+		MenuManager.PushViewByName('DifficultySelectionScreen');
 	}
 }
 
@@ -406,21 +442,26 @@ function PopulateButtons()
 	if (IsDemo())
 	{
 		Obj.SetString("label", PlayDemoText);
+		DataProvider.SetElementObject(i, Obj);
+		StartButtonIndex = i;
+		NewGameButtonIndex = -1;
+		StartDLCButtonIndex = -1;
+	}
+	else if (Engine != None && Engine.ShouldShowNewDLCGame())
+	{
+		Obj.SetString("label", StartText);
+		DataProvider.SetElementObject(i, Obj);
+		NewGameButtonIndex = i;
+		StartButtonIndex = -1;
+		StartDLCButtonIndex = -1;
 	}
 	else
 	{
 		Obj.SetString("label", StartText);
-	}
-	DataProvider.SetElementObject(i, Obj);
-	StartButtonIndex = i;
-		
-	if (Engine != None && Engine.ShouldShowNewDLCGame())
-	{
-		++i;
-		Obj = CreateObject("Object");
-		Obj.SetString("label", StartDLCText);
 		DataProvider.SetElementObject(i, Obj);
-		StartDLCButtonIndex = i;
+		StartButtonIndex = i;
+		NewGameButtonIndex = -1;
+		StartDLCButtonIndex = -1;
 	}
 		
 	GetOLPC().ProfileSettings.GetProfileSettingValueId(PSI_FinishedGame, bHasFinishedGame);
@@ -519,6 +560,10 @@ private final function OnButtonClick(GFxClikWidget.EventData ev)
 	else if (StartButtonIndex != -1 && ev.index == StartButtonIndex)
 	{
 		OnStartButtonPress(ev);
+	}
+	else if (NewGameButtonIndex != -1 && ev.index == NewGameButtonIndex)
+	{
+		OnNewGameButtonPress(ev);
 	}
 	else if (StartDLCButtonIndex != -1 && ev.index == StartDLCButtonIndex)
 	{
@@ -727,6 +772,7 @@ event bool WidgetInitialized(name WidgetName, name WidgetPath, GFxObject Widget)
 
 private function ShowMessageDialog(string title, string message, string okButtonLabel, string callbackName) { ActionScriptVoid("ShowMessageDialog"); }
 function ASShowNewGameIntroText() { ActionScriptVoid("ShowNewGameIntroText"); }
+function ASShowGameSelectDialog(string titleStr, string bodyStr, string mainGameStr, string dlcStr) { ActionScriptVoid("ShowGameSelectDialog"); }
 
 function ASInitButtonFocus() { ActionScriptVoid("InitFocus"); }
 
@@ -739,6 +785,8 @@ defaultproperties
 
 	ContinueButtonIndex=-1
 	StartButtonIndex=-1
+	NewGameButtonIndex=-1
+	StartDLCButtonIndex=-1
 	LoadButtonIndex=-1
 	OptionsButtonIndex=-1
 	MultiplayerButtonIndex=-1

@@ -1128,6 +1128,12 @@ void AOLBot::HearNoise(AActor* NoiseMaker, FLOAT Loudness, FName NoiseType)
 {
 	AOLHero* NoiseMakerHero = Cast<AOLHero>(NoiseMaker);
 	const UBOOL bIsDummy = NoiseMakerHero && NoiseMakerHero->bIsDummyPawn;
+	if (bIsDummy)
+	{
+		// Ignore noise from dummy players when enemy sync is disabled
+		if (!UOLNetworkConfig::StaticClass()->GetDefaultObject<UOLNetworkConfig>()->SyncEnemies)
+			return;
+	}
 	if ( !bIsDummy && (!NoiseMaker->Instigator || !NoiseMaker->Instigator->Controller) )
 		return;
 	if ( !WorldInfo->GRI )
@@ -1295,6 +1301,7 @@ UBOOL AOLBot::IsInAttackRange()
 
 UBOOL AOLBot::IsInApproachAttackRange()
 {
+	if (!EnemyPawn || !TargetPlayer) return FALSE;
 	TWEAKABLE FLOAT ExtraBuf = 1.1f;
 	UBOOL ZHit = CheckAttackZDiff(EnemyPawn->Location);
 	return ZHit && (EnemyPawn->Location - TargetPlayer->Location).SizeSquared2D() <= Square(ExtraBuf*EnemyPawn->AttackRange);
@@ -1303,6 +1310,7 @@ UBOOL AOLBot::IsInApproachAttackRange()
 
 UBOOL AOLBot::IsInFinalAttackRange()
 {
+	if (!EnemyPawn || !TargetPlayer) return FALSE;
 	TWEAKABLE FLOAT ExtraBuf = 1.25f;
 	UBOOL ZHit = CheckAttackZDiff(EnemyPawn->Location);
 	return ZHit && (EnemyPawn->Location - TargetPlayer->Location).SizeSquared2D() <= Square(ExtraBuf*EnemyPawn->AttackRange);
@@ -1310,6 +1318,9 @@ UBOOL AOLBot::IsInFinalAttackRange()
 
 UBOOL AOLBot::IsInDamageRange()
 {
+	if (!EnemyPawn || !TargetPlayer)
+		return FALSE;
+
 	FVector CheckEnemyLocation = EnemyPawn->Location;
 
 	if (EnemyPawn->IsA(AOLEnemyNanoCloud::StaticClass()))
@@ -1317,6 +1328,9 @@ UBOOL AOLBot::IsInDamageRange()
 		CheckEnemyLocation = EnemyPawn->Mesh->GetBoneLocation(EnemyPawn->HipBone);
 		CheckEnemyLocation.Z = EnemyPawn->Location.Z;
 	}
+
+	if (!TargetPlayer->CylinderComponent)
+		return FALSE;
 
 	UBOOL ZHit = CheckEnemyLocation.Z < (TargetPlayer->Location.Z + TargetPlayer->CylinderComponent->Translation.Z + TargetPlayer->CylinderComponent->CollisionHeight * 2.0f)
 		&& TargetPlayer->Location.Z < (CheckEnemyLocation.Z + 250.0f);

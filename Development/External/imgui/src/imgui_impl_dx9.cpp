@@ -53,11 +53,14 @@ struct ImGui_ImplDX9_Data
     LPDIRECT3DVERTEXBUFFER9     pVB;
     LPDIRECT3DINDEXBUFFER9      pIB;
     LPDIRECT3DTEXTURE9          FontTexture;
+    // Explicit vertex declaration (avoids SetFVF which causes DXVK to
+    // create an internal cached VDecl that blocks device Reset).
+    IDirect3DVertexDeclaration9* pVertexDecl;
     int                         VertexBufferSize;
     int                         IndexBufferSize;
     bool                        HasRgbaSupport;
 
-    ImGui_ImplDX9_Data()        { memset((void*)this, 0, sizeof(*this)); VertexBufferSize = 5000; IndexBufferSize = 10000; }
+    ImGui_ImplDX9_Data()        { memset((void*)this, 0, sizeof(*this)); VertexBufferSize = 100000; IndexBufferSize = 200000; }
 };
 
 struct CUSTOMVERTEX
@@ -238,7 +241,9 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     bd->pIB->Unlock();
     device->SetStreamSource(0, bd->pVB, 0, sizeof(CUSTOMVERTEX));
     device->SetIndices(bd->pIB);
-    device->SetFVF(D3DFVF_CUSTOMVERTEX);
+    // Use explicit vertex declaration instead of SetFVF to avoid DXVK
+    // creating an internal cached VDecl that blocks device Reset.
+    device->SetVertexDeclaration(bd->pVertexDecl);
 
     // Setup desired DX state
     ImGui_ImplDX9_SetupRenderState(draw_data);
@@ -293,6 +298,18 @@ void ImGui_ImplDX9_RenderDrawData(ImDrawData* draw_data)
     // Restore the DX9 state
     state_block->Apply();
     state_block->Release();
+
+    // Explicitly clear all resource bindings after restoring state.
+    // DXVK counts any bound D3DPOOL_DEFAULT resource as "alive losable" and
+    // will refuse device Reset if any remain bound. state_block->Apply() may
+    // restore engine bindings that were active before ImGui ran.
+    device->SetStreamSource(0, nullptr, 0, 0);
+    device->SetIndices(nullptr);
+    device->SetVertexDeclaration(nullptr);
+    device->SetVertexShader(nullptr);
+    device->SetPixelShader(nullptr);
+    for (DWORD i = 0; i < 8; i++)
+        device->SetTexture(i, nullptr);
 }
 
 static bool ImGui_ImplDX9_CheckFormatSupport(LPDIRECT3DDEVICE9 pDevice, D3DFORMAT format)
@@ -400,6 +417,23 @@ bool ImGui_ImplDX9_CreateDeviceObjects()
         return false;
     if (!ImGui_ImplDX9_CreateFontsTexture())
         return false;
+
+    // Create an explicit vertex declaration instead of using SetFVF.
+    // SetFVF causes DXVK to create a cached IDirect3DVertexDeclaration9 internally
+    // that is counted as a losable resource and blocks device Reset.
+    // By managing it ourselves we can Release it in InvalidateDeviceObjects.
+    if (!bd->pVertexDecl)
+    {
+        static const D3DVERTEXELEMENT9 layout[] =
+        {
+            { 0, 0,  D3DDECLTYPE_FLOAT3,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+            { 0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR,    0 },
+            { 0, 16, D3DDECLTYPE_FLOAT2,   D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+            D3DDECL_END()
+        };
+        bd->pd3dDevice->CreateVertexDeclaration(layout, &bd->pVertexDecl);
+    }
+
     return true;
 }
 
@@ -408,9 +442,22 @@ void ImGui_ImplDX9_InvalidateDeviceObjects()
     ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData();
     if (!bd || !bd->pd3dDevice)
         return;
-    if (bd->pVB) { bd->pVB->Release(); bd->pVB = nullptr; }
-    if (bd->pIB) { bd->pIB->Release(); bd->pIB = nullptr; }
-    if (bd->FontTexture) { bd->FontTexture->Release(); bd->FontTexture = nullptr; ImGui::GetIO().Fonts->SetTexID(0); } // We copied bd->pFontTextureView to io.Fonts->TexID so let's clear that as well.
+    if (bd->pVB)          { bd->pVB->Release();          bd->pVB          = nullptr; }
+    if (bd->pIB)          { bd->pIB->Release();          bd->pIB          = nullptr; }
+    if (bd->pVertexDecl)  { bd->pVertexDecl->Release();  bd->pVertexDecl  = nullptr; }
+    if (bd->FontTexture)  { bd->FontTexture->Release();  bd->FontTexture  = nullptr; ImGui::GetIO().Fonts->SetTexID(0); }
+}
+
+int ImGui_ImplDX9_GetLiveResourceCount()
+{
+    ImGui_ImplDX9_Data* bd = ImGui_ImplDX9_GetBackendData();
+    if (!bd) return 0;
+    int n = 0;
+    if (bd->pVB)          n++;
+    if (bd->pIB)          n++;
+    if (bd->pVertexDecl)  n++;
+    if (bd->FontTexture)  n++;
+    return n;
 }
 
 void ImGui_ImplDX9_NewFrame()

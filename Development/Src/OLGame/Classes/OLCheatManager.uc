@@ -278,6 +278,8 @@ exec function ToggleFreeCam()
 	{
 		bDebugGhost = false;
 		GhostPawn(false);
+		if (HeroPawn != None)
+			HeroPawn.ResetAfterTeleport();
 	}
 
 	if (bDebugFreeCam)
@@ -311,6 +313,8 @@ exec function ToggleFreeCamNoPause()
 	{
 		bDebugGhost = false;
 		GhostPawn(false);
+		if (HeroPawn != None)
+			HeroPawn.ResetAfterTeleport();
 	}
 	SetPause(false);
 	bPausedForFreeCam = false;
@@ -322,7 +326,7 @@ exec function ToggleFreeCamNoPause()
 	}
 	else
 	{
-		SetCameraMode('FreeCam');		
+		SetCameraMode('FreeCam');
 		ClientMessage("Free Cam (unpaused)");
 	}
 }
@@ -456,6 +460,7 @@ exec function FasterGameSpeed()
 
 native function GhostPawn(bool ghosting);
 
+
 exec function Ghost()
 {
 	if (!bCheatsEnabled)
@@ -541,6 +546,7 @@ exec function cp(string CPName)
 	StartNewGameAtCheckpoint(CPName, false);
 }
 
+
 exec native function cplist();
 
 exec native function ApplyCP(string CPName);
@@ -597,6 +603,18 @@ exec function InflictDamage(optional float amount)
 	}
 
 	HeroPawn.TakeDamage(amount, None, HeroPawn.Location, vect(0, 0, 0), None);
+}
+
+exec function DamagePlayer(float Damage)
+{
+	if (HeroPawn != None)
+		HeroPawn.TakeDamage(int(Damage), None, HeroPawn.Location, vect(0, 0, 0), None);
+}
+
+exec function KillPlayer()
+{
+	if (HeroPawn != None)
+		HeroPawn.TakeDamage(HeroPawn.Health + 1, None, HeroPawn.Location, vect(0, 0, 0), None);
 }
 
 exec native function ToggleMute();
@@ -856,6 +874,11 @@ exec function SpawnEnemy(string EnemyType, optional EWeapon WeaponToUse=0, optio
     NewPawn.Modifiers.WeaponToUse 	= WeaponToUse;
 	NewPawn.ApplyModifiers(NewPawn.Modifiers);
 
+	ApplySpawnedEnemySetup(NewPawn, EnemyType);
+}
+
+private function ApplySpawnedEnemySetup(OLEnemyPawn NewPawn, string EnemyType)
+{
 	if (EnemyType ~= "Soldier")
 	{
 		NewPawn.BehaviorTree = OLBTBehaviorTree(class'OLUtils'.static.LoadObjectFromModPackage(
@@ -907,6 +930,51 @@ exec function SpawnEnemy(string EnemyType, optional EWeapon WeaponToUse=0, optio
 	}
 
 	NewPawn.InitContextualVO();
+}
+
+function SpawnEnemyAt(string EnemyType, byte WeaponToUse, bool ShouldAttack, vector SpawnLoc, rotator SpawnRot)
+{
+	local class<OLEnemyPawn> PawnClass;
+	local OLEnemyPawn NewPawn;
+	local OLBot NewBot;
+
+	if (!bCheatsEnabled)
+		return;
+
+	if (EnemyType ~= "Cannibal")
+		PawnClass = class'OLEnemyCannibal';
+	else if (EnemyType ~= "Soldier")
+		PawnClass = class'OLEnemySoldier';
+	else if (EnemyType ~= "Groom")
+		PawnClass = class'OLEnemyGroom';
+	else if (EnemyType ~= "Priest")
+		PawnClass = class'OLEnemyPriest';
+	else if (EnemyType ~= "Surgeon")
+		PawnClass = class'OLEnemySurgeon';
+	else if (EnemyType ~= "NanoCloud")
+		PawnClass = class'OLEnemyNanoCloud';
+	else
+		return;
+
+	NewPawn = Spawn(PawnClass,, 'CustomEnemy', SpawnLoc, SpawnRot,, true, true);
+	if (NewPawn == None)
+		return;
+
+	NewBot = Spawn(class'OLBot');
+	if (NewBot == None)
+	{
+		NewPawn.Destroy();
+		return;
+	}
+
+	NewBot.Possess(NewPawn, false);
+
+	NewPawn.Modifiers.bShouldAttack = ShouldAttack;
+	NewPawn.Modifiers.bUseForMusic  = true;
+	NewPawn.Modifiers.WeaponToUse   = EWeapon(WeaponToUse);
+	NewPawn.ApplyModifiers(NewPawn.Modifiers);
+
+	ApplySpawnedEnemySetup(NewPawn, EnemyType);
 }
 
 exec function MakeFullProfile()
@@ -961,8 +1029,139 @@ exec function ToggleGrain()
     if (FX == None || FX.CurrentUberPostEffect == None)
         return;
     Effect = FX.CurrentUberPostEffect;
-    if (Effect.GrainOpacity > 0.0)
+    FX.bGrainDisabled = Effect.GrainOpacity > 0.0;
+    if (FX.bGrainDisabled)
         Effect.GrainOpacity = 0.0;
     else
         Effect.GrainOpacity = Effect.Default.GrainOpacity;
+}
+
+// Stream a YouTube (or any) video URL via yt-dlp + ffmpeg into a Texture2DDynamic on a screen plane.
+// Usage: playvideo <url>
+// Usage: playvideo <YouTubeVideoID>  (e.g. playvideo dQw4w9WgXcQ)
+// Full URLs are not supported in exec — pass only the 11-char video ID.
+exec function PlayVideo(string VideoID)
+{
+    local OLBikScreen Screen;
+    local OLVideoPlayer VP;
+    local vector CamLoc, SpawnLoc;
+    local rotator CamRot, SpawnRot;
+    local string URL;
+
+    if (VideoID == "")
+        return;
+
+    // Reconstruct the full YouTube URL from the video ID
+    URL = "https://www.youtube.com/watch?v=" $ VideoID;
+
+    Outer.GetPlayerViewPoint(CamLoc, CamRot);
+    SpawnRot.Pitch = 0;
+    SpawnRot.Yaw   = CamRot.Yaw;
+    SpawnRot.Roll  = 0;
+    SpawnLoc = CamLoc + vector(SpawnRot) * 300.0;
+
+    Screen = Outer.Spawn(class'OLBikScreen', Outer,, SpawnLoc, SpawnRot);
+    VP = Outer.Spawn(class'OLVideoPlayer', Outer,, SpawnLoc, SpawnRot);
+
+    if (Screen != None && VP != None)
+    {
+        // Init screen material so VP can assign texture to it later
+        Screen.Init("");
+        VP.TargetScreen = Screen;
+        VP.Play(URL);
+    }
+}
+
+// Spawn a CEF browser on a screen plane 300 units ahead of the player.
+// Usage: playbrowser [url]  (default: about:blank)
+exec function PlayBrowser(string URL)
+{
+    local OLBikScreen Screen;
+    local OLBrowser Browser;
+    local vector CamLoc, SpawnLoc;
+    local rotator CamRot, SpawnRot;
+
+    Outer.GetPlayerViewPoint(CamLoc, CamRot);
+    SpawnRot.Pitch = 0;
+    SpawnRot.Yaw   = CamRot.Yaw;
+    SpawnRot.Roll  = 0;
+    SpawnLoc = CamLoc + vector(SpawnRot) * 300.0;
+
+    Screen = Outer.Spawn(class'OLBikScreen', Outer,, SpawnLoc, SpawnRot);
+    Browser = Outer.Spawn(class'OLBrowser', Outer,, SpawnLoc, SpawnRot);
+
+    if (Screen != None && Browser != None)
+    {
+        Screen.Init("");
+        Browser.TargetScreen = Screen;
+        if (URL != "")
+            Browser.StartURL = URL;
+        Browser.Open();
+    }
+}
+
+// Spawn a video plane 300 units in front of the player playing <Filename>.bik from OLGame/Movies/.
+// Usage: playbik <filename>  (no extension)
+exec function PlayBik(string Filename)
+{
+    local OLBikScreen Screen;
+    local vector CamLoc, SpawnLoc;
+    local rotator CamRot, SpawnRot;
+
+    if (Filename == "")
+        return;
+
+    // Get camera position and facing direction
+    Outer.GetPlayerViewPoint(CamLoc, CamRot);
+
+    // Place screen 300 units ahead of camera, yaw only so it stands vertically
+    SpawnRot.Pitch = 0;
+    SpawnRot.Yaw   = CamRot.Yaw;
+    SpawnRot.Roll  = 0;
+    SpawnLoc = CamLoc + vector(SpawnRot) * 300.0;
+
+    Screen = Outer.Spawn(class'OLBikScreen', Outer,, SpawnLoc, SpawnRot);
+    if (Screen != None)
+        Screen.Init(Filename);
+}
+
+exec function ScaleHero(float Scale)
+{
+    local OLHero Hero;
+    local float  S, Ratio;
+
+    Hero = OLHero(Outer.Pawn);
+    if (Hero == None)
+        return;
+
+    S = FMax(Scale, 0.01);
+
+    // Ratio relative to current draw scale so repeated calls work correctly
+    Ratio = S / FMax(Hero.DrawScale, 0.001);
+
+    // Visual scale
+    Hero.SetDrawScale(S);
+
+    // Collision
+    Hero.SetCollisionSize(Hero.CylinderComponent.CollisionRadius * Ratio, Hero.CylinderComponent.CollisionHeight * Ratio);
+    Hero.CrouchHeight *= Ratio;
+    Hero.CrouchRadius *= Ratio;
+
+    // Camera eye height
+    Hero.BaseEyeHeight *= Ratio;
+    Hero.EyeHeight      = Hero.BaseEyeHeight;
+
+    // Mesh offset so feet stay on ground
+    Hero.Mesh.SetTranslation(Hero.Mesh.Translation * Ratio);
+
+    // Movement speeds — multiply current values so repeated calls compose
+    Hero.NormalWalkSpeed   *= Ratio;
+    Hero.NormalRunSpeed    *= Ratio;
+    Hero.WaterWalkSpeed    *= Ratio;
+    Hero.WaterRunSpeed     *= Ratio;
+    Hero.LimpingWalkSpeed  *= Ratio;
+    Hero.HobblingWalkSpeed *= Ratio;
+    Hero.HobblingRunSpeed  *= Ratio;
+    Hero.JumpZ             *= Ratio;
+    Hero.AccelRate         *= Ratio;
 }

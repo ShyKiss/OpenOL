@@ -8,7 +8,7 @@
 #if WITH_APEX
 #include "..\Src\NvApexRender.h"
 #endif
-#include "OLImGui.h"
+#include "ImGuiLinker.h"
 
 //
 // Globals.
@@ -429,6 +429,11 @@ void FD3D9DynamicRHI::UpdateD3DDeviceFromViewports()
 
 			if(Direct3DDevice)
 			{
+				// Release ImGui D3D9 resources first — they are D3DPOOL_DEFAULT and must be
+				// freed before any Reset attempt. Doing this here (before ReleaseDynamicRHI
+				// and outside the retry loop) ensures they are released exactly once.
+				OLImGui_InvalidateDeviceObjects();
+
 				// Release dynamic resources and render targets.
 				for(TLinkedList<FRenderResource*>::TIterator ResourceIt(FRenderResource::GetResourceList());ResourceIt;ResourceIt.Next())
 				{
@@ -449,25 +454,36 @@ void FD3D9DynamicRHI::UpdateD3DDeviceFromViewports()
 				// Release the back-buffer reference to allow resetting the device.
 				BackBuffer = NULL;
 
-				// Simple reset the device with the new present parameters.
-				do 
-				{
-					// Release ImGui D3D9 resources before device reset
-					OLImGui_InvalidateDeviceObjects();
+				// Clear all device bindings
+				// D3DPOOL_DEFAULT resources which count as "alive losable" and block Reset.
+				for (UINT i = 0; i < 16; i++)
+					Direct3DDevice->SetTexture(i, NULL);
+				for (UINT i = D3DVERTEXTEXTURESAMPLER0; i <= D3DVERTEXTEXTURESAMPLER3; i++)
+					Direct3DDevice->SetTexture(i, NULL);
+				Direct3DDevice->SetVertexShader(NULL);
+				Direct3DDevice->SetPixelShader(NULL);
+				Direct3DDevice->SetIndices(NULL);
+				for (UINT i = 0; i < 8; i++)
+					Direct3DDevice->SetStreamSource(i, NULL, 0, 0);
+				// Also clear render targets and depth stencil — these are D3DPOOL_DEFAULT
+				for (UINT i = 1; i < 4; i++)
+					Direct3DDevice->SetRenderTarget(i, NULL);
+				Direct3DDevice->SetDepthStencilSurface(NULL);
 
+				// Simple reset the device with the new present parameters.
+				do
+				{
 					#if WITH_PANORAMA
 						extern void appPanoramaRenderHookReset(void*);
 						// Allow Panorama to reset any resources before reseting the device
 						appPanoramaRenderHookReset(&PresentParameters);
 					#endif
-					if( FAILED(Result=Direct3DDevice->Reset(&PresentParameters) ) )
+					Result = Direct3DDevice->Reset(&PresentParameters);
+					if( FAILED(Result) )
 					{
-						// Sleep for a second before trying again if we couldn't reset the device as the most likely
-						// cause is the device not being ready/lost which can e.g. occur if a screen saver with "lock"
-						// kicks in.
 						appSleep(1.0);
 					}
-				} 
+				}
 				while( FAILED(Result) );
 
 				// Get pointers to the device's back buffer and depth buffer.
@@ -904,8 +920,17 @@ void FD3D9DynamicRHI::UpdateD3DDeviceFromViewports()
 			// Set the global variables which are accessed by other subsystems.
 			GLegacyDirect3DDevice9 = Direct3DDevice;
 
-			// Initialize ImGui once the D3D9 device is ready
-			OLImGui_Init(Direct3DDevice, DeviceWindow);
+			// Initialize ImGui once the D3D9 device is ready (not in editor)
+			if (!GIsEditor)
+				OLImGui_Init(Direct3DDevice, DeviceWindow);
+
+#if WITH_EDITOR
+			if (GIsEditor)
+			{
+				extern void OLEditorServer_Init();
+				OLEditorServer_Init();
+			}
+#endif
 
 			// Tell the windows to redraw when they can.
 			for(INT ViewportIndex = 0;ViewportIndex < Viewports.Num();ViewportIndex++)

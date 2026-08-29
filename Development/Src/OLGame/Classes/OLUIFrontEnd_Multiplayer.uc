@@ -20,9 +20,9 @@ var localized string SyncInteractableText;
 var localized string SyncEnemiesText;
 var localized string SyncMatineesText;
 var localized string SyncPickupsText;
-var localized string HostSteamIDText;
-var localized string JoinSteamText;
-var localized string MySteamIDText;
+var localized string SpeedrunModeText;
+var localized string CreateServerText;
+var localized string StopServerText;
 
 // OST_ type constants matching OptionsList.as
 const OST_CHECKBOX       = 0;
@@ -30,9 +30,9 @@ const OST_BUTTON         = 4; // OST_ControllerConfigButton — single button ro
 const OST_TEXTINPUT      = 6;
 
 // Fake ProfileSettingIDs used to identify our custom buttons in Press_OptionItemButton
-const BTN_ID_COPY_LINK    = 9001;
-const BTN_ID_INVITE_STEAM = 9002;
-const BTN_ID_JOIN_STEAM   = 9003;
+const BTN_ID_COPY_LINK      = 9001;
+const BTN_ID_INVITE_STEAM   = 9002;
+const BTN_ID_CREATE_SERVER  = 9003;
 
 // Indices into SettingsOptions array
 var int UsernameIdx;
@@ -44,8 +44,9 @@ var int SyncInteractableIdx;
 var int SyncEnemiesIdx;
 var int SyncMatineesIdx;
 var int SyncPickupsIdx;
+var int SpeedrunModeIdx;
 var int InviteLinkIdx;
-var int HostSteamIDIdx;
+var int CreateServerIdx;
 
 struct SettingEntry
 {
@@ -67,7 +68,6 @@ function OnViewLoaded()
 }
 
 // Called by Flash whenever any text input field changes.
-// idx = index in SettingsOptions array, NewValue = current text.
 function OnTextInputChanged(int idx, string NewValue)
 {
     if (idx >= 0 && idx < SettingsOptions.Length)
@@ -80,14 +80,14 @@ function Press_OptionItemButton(int PSID)
 
     switch (PSID)
     {
-        case BTN_ID_COPY_LINK:
-            Press_CopyLink(Dummy);
-            break;
+        //case BTN_ID_COPY_LINK:
+        //    Press_CopyLink(Dummy);
+        //    break;
         case BTN_ID_INVITE_STEAM:
             Press_InviteSteam(Dummy);
             break;
-        case BTN_ID_JOIN_STEAM:
-            Press_JoinSteam(Dummy);
+        case BTN_ID_CREATE_SERVER:
+            Press_CreateServer(Dummy);
             break;
     }
 }
@@ -99,68 +99,66 @@ function BuildOptions()
 
     SettingsOptions.Length = 0;
 
-    E.Label = UsernameText;  E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetUsername();   E.IntValue = 0;
+    E.Label = UsernameText;  E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetUsername();   E.IntValue = 0; E.bReadOnly = false;
     UsernameIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = IPText;        E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetIP();         E.IntValue = 0;
+    E.Label = IPText;        E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetIP();         E.IntValue = 0; E.bReadOnly = false;
     IPIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = PortText;      E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetPort();       E.IntValue = 0;
+    E.Label = PortText;      E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetPort();       E.IntValue = 0; E.bReadOnly = false;
     PortIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = RoomCodeText;  E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetRoomCode();   E.IntValue = 0;
+    E.Label = RoomCodeText;  E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetRoomCode();   E.IntValue = 0; E.bReadOnly = false;
     RoomCodeIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = PasswordText;  E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetPassword();   E.IntValue = 1; // 1 = password field (masked)
+    E.Label = PasswordText;  E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetPassword();   E.IntValue = 1; E.bReadOnly = false;
     PasswordIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = SyncInteractableText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSyncInteractable() ? 1 : 0;
+    E.Label = SyncInteractableText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSyncInteractable() ? 1 : 0; E.bReadOnly = false;
     SyncInteractableIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = SyncEnemiesText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSyncEnemies() ? 1 : 0;
+    E.Label = SyncEnemiesText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSyncEnemies() ? 1 : 0; E.bReadOnly = false;
     SyncEnemiesIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = SyncMatineesText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSyncMatinees() ? 1 : 0;
+    E.Label = SyncMatineesText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSyncMatinees() ? 1 : 0; E.bReadOnly = false;
     SyncMatineesIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = SyncPickupsText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSyncPickups() ? 1 : 0;
+    E.Label = SyncPickupsText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSyncPickups() ? 1 : 0; E.bReadOnly = false;
     SyncPickupsIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.Label = InviteLinkLabelText; E.Type = OST_TEXTINPUT; E.IntValue = 0; E.bReadOnly = true;
-    E.StringValue = GetOLPC().NativeBuildInviteLink(
-        SettingsOptions[IPIdx].StringValue,
-        SettingsOptions[PortIdx].StringValue,
-        SettingsOptions[RoomCodeIdx].StringValue,
-        SettingsOptions[PasswordIdx].StringValue);
-    InviteLinkIdx = SettingsOptions.Length;
+    E.Label = SpeedrunModeText; E.Type = OST_CHECKBOX; E.StringValue = ""; E.IntValue = GetOLPC().GetNetSpeedrunMode() ? 1 : 0; E.bReadOnly = false;
+    SpeedrunModeIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 
-    E.bReadOnly = false;
-    E.Label = ""; E.Type = OST_BUTTON; E.StringValue = ""; E.IntValue = BTN_ID_COPY_LINK;
-    SettingsOptions.AddItem(E);
+    // TODO: re-enable invite link row and Copy Link button when openol:// deep-link is ready
+    //E.Label = InviteLinkLabelText; E.Type = OST_TEXTINPUT; E.IntValue = 0; E.bReadOnly = true;
+    //E.StringValue = GetOLPC().NativeBuildInviteLink(
+    //    SettingsOptions[IPIdx].StringValue,
+    //    SettingsOptions[PortIdx].StringValue,
+    //    SettingsOptions[RoomCodeIdx].StringValue,
+    //    SettingsOptions[PasswordIdx].StringValue);
+    //InviteLinkIdx = SettingsOptions.Length;
+    //SettingsOptions.AddItem(E);
+
+    //E.bReadOnly = false;
+    //E.Label = ""; E.Type = OST_BUTTON; E.StringValue = ""; E.IntValue = BTN_ID_COPY_LINK;
+    //SettingsOptions.AddItem(E);
 
     E.Label = ""; E.Type = OST_BUTTON; E.StringValue = ""; E.IntValue = BTN_ID_INVITE_STEAM;
     SettingsOptions.AddItem(E);
 
-    // My SteamID (read-only, for sharing with the host).
-    E.Label = MySteamIDText; E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().NativeGetMySteamID(); E.IntValue = 0; E.bReadOnly = true;
-    SettingsOptions.AddItem(E);
-
-    // Steam P2P join: enter the host's SteamID and click Join.
-    E.Label = HostSteamIDText; E.Type = OST_TEXTINPUT; E.StringValue = GetOLPC().GetNetHostSteamID(); E.IntValue = 0; E.bReadOnly = false;
-    HostSteamIDIdx = SettingsOptions.Length;
-    SettingsOptions.AddItem(E);
-
-    E.Label = ""; E.Type = OST_BUTTON; E.StringValue = ""; E.IntValue = BTN_ID_JOIN_STEAM;
+    // Create/Stop Server button
+    E.Label = ""; E.Type = OST_BUTTON; E.StringValue = ""; E.IntValue = BTN_ID_CREATE_SERVER;
+    CreateServerIdx = SettingsOptions.Length;
     SettingsOptions.AddItem(E);
 }
 
@@ -168,9 +166,12 @@ function PopulateList()
 {
     local int i;
     local GFxObject DataProvider, Obj, LabelArr;
+    local bool bRelayRunning;
 
     if (SettingsList == None)
         return;
+
+    bRelayRunning = GetOLPC().NativeIsRelayRunning();
 
     DataProvider = CreateArray();
     for (i = 0; i < SettingsOptions.Length; i++)
@@ -190,12 +191,13 @@ function PopulateList()
             Obj.SetFloat("ProfileSettingID", SettingsOptions[i].IntValue);
             Obj.SetFloat("ButtonLabelIndex", 0);
             LabelArr = CreateArray();
-            if (SettingsOptions[i].IntValue == BTN_ID_COPY_LINK)
-                LabelArr.SetElementString(0, CopyLinkText);
-            else if (SettingsOptions[i].IntValue == BTN_ID_INVITE_STEAM)
+            //if (SettingsOptions[i].IntValue == BTN_ID_COPY_LINK)
+            //    LabelArr.SetElementString(0, CopyLinkText);
+            //else
+            if (SettingsOptions[i].IntValue == BTN_ID_INVITE_STEAM)
                 LabelArr.SetElementString(0, InviteSteamText);
-            else
-                LabelArr.SetElementString(0, JoinSteamText);
+            else if (SettingsOptions[i].IntValue == BTN_ID_CREATE_SERVER)
+                LabelArr.SetElementString(0, bRelayRunning ? StopServerText : CreateServerText);
             Obj.SetObject("ButtonLabelsList", LabelArr);
         }
         else
@@ -210,7 +212,6 @@ function PopulateList()
 function StoreListValues()
 {
     local int i;
-    local string Link;
     local array<ASValue> Args;
     local ASValue RetVal;
 
@@ -237,20 +238,20 @@ function StoreListValues()
         }
     }
 
-    // Update invite link after reading IP/Port/Room/Pass
-    Link = GetOLPC().NativeBuildInviteLink(
-        SettingsOptions[IPIdx].StringValue,
-        SettingsOptions[PortIdx].StringValue,
-        SettingsOptions[RoomCodeIdx].StringValue,
-        SettingsOptions[PasswordIdx].StringValue);
-    SettingsOptions[InviteLinkIdx].StringValue = Link;
-    if (SettingsList != None)
-    {
-        Args.Length = 2;
-        Args[0].Type = AS_Number; Args[0].n = InviteLinkIdx;
-        Args[1].Type = AS_String; Args[1].s = Link;
-        SettingsList.Invoke("SetTextInputValueAt", Args);
-    }
+    // TODO: re-enable when invite link row is restored
+    //Link = GetOLPC().NativeBuildInviteLink(
+    //    SettingsOptions[IPIdx].StringValue,
+    //    SettingsOptions[PortIdx].StringValue,
+    //    SettingsOptions[RoomCodeIdx].StringValue,
+    //    SettingsOptions[PasswordIdx].StringValue);
+    //SettingsOptions[InviteLinkIdx].StringValue = Link;
+    //if (SettingsList != None)
+    //{
+    //    Args.Length = 2;
+    //    Args[0].Type = AS_Number; Args[0].n = InviteLinkIdx;
+    //    Args[1].Type = AS_String; Args[1].s = Link;
+    //    SettingsList.Invoke("SetTextInputValueAt", Args);
+    //}
 }
 
 function SaveSettings()
@@ -265,6 +266,7 @@ function SaveSettings()
         SettingsOptions[SyncEnemiesIdx].IntValue != 0,
         SettingsOptions[SyncMatineesIdx].IntValue != 0,
         SettingsOptions[SyncPickupsIdx].IntValue != 0,
+        SettingsOptions[SpeedrunModeIdx].IntValue != 0,
         SettingsOptions[RoomCodeIdx].StringValue,
         SettingsOptions[PasswordIdx].StringValue);
 }
@@ -298,11 +300,8 @@ function bool ParseInviteLink(string Link)
 
 function DoConnect()
 {
-    local string MapName;
-
     SaveSettings();
-    MapName = class'WorldInfo'.static.GetWorldInfo().GetMapName(true);
-    ConsoleCommand("open " $ MapName $ "?game=Multiplayer.MultiplayerGame");
+    ConsoleCommand("open DLC_Intro_Persistent?game=Multiplayer.MultiplayerGame");
 }
 
 function Press_Apply(GFxClikWidget.EventData ev)
@@ -333,35 +332,31 @@ function Press_InviteSteam(GFxClikWidget.EventData ev)
     GetOLPC().NativeOpenSteamFriendsOverlay();
 }
 
-function Press_JoinSteam(GFxClikWidget.EventData ev)
+function Press_CreateServer(GFxClikWidget.EventData ev)
 {
-    local string SteamIDStr;
-    local string MapName;
+    local int Port;
 
-    // Read current SteamID from the text field.
-    StoreListValues();
-    SteamIDStr = SettingsOptions[HostSteamIDIdx].StringValue;
+    if (GetOLPC().NativeIsRelayRunning())
+    {
+        // Stop relay, then refresh list so button shows "Create Server".
+        GetOLPC().NativeStopRelay();
+        PopulateList();
+    }
+    else
+    {
+        // Save settings first so Port field is up to date.
+        StoreListValues();
+        Port = int(SettingsOptions[PortIdx].StringValue);
+        if (Port <= 0) Port = 7777;
 
-    if (Len(SteamIDStr) == 0)
-        return;
+        // Start relay and connect to it locally (no P2P — we are the host).
+        GetOLPC().NativeStartRelay(Port);
+        GetOLPC().NativeConnectLocal(Port);
 
-    // Persist the HostSteamID so it survives restarts.
-    class'OLNetworkConfig'.static.SaveHostSteamID(SteamIDStr);
-
-    // Save settings (Username, RoomCode, Password, etc.) first.
-    SaveSettings();
-
-    // Initiate Steam P2P connection.
-    // Relay port comes from the Port field (same port the host's relay runs on).
-    GetOLPC().NativeConnectP2P(
-        SteamIDStr,
-        int(SettingsOptions[PortIdx].StringValue),
-        SettingsOptions[RoomCodeIdx].StringValue,
-        SettingsOptions[PasswordIdx].StringValue);
-
-    // Open the current map in multiplayer mode.
-    MapName = class'WorldInfo'.static.GetWorldInfo().GetMapName(true);
-    ConsoleCommand("open " $ MapName $ "?game=Multiplayer.MultiplayerGame");
+        // Open the map.
+        SaveSettings();
+        ConsoleCommand("open DLC_Intro_Persistent?game=Multiplayer.MultiplayerGame");
+    }
 }
 
 function Press_Back(GFxClikWidget.EventData ev)
@@ -394,12 +389,12 @@ event bool WidgetInitialized(name WidgetName, name WidgetPath, GFxObject Widget)
             BackButton.SetString("label", BackText);
             bWasHandled = true;
             break;
-        case ('copyLinkBtn'):
-            CopyLinkButton = GFxClikWidget(Widget);
-            CopyLinkButton.AddEventListener('CLIK_press', Press_CopyLink);
-            CopyLinkButton.SetString("label", CopyLinkText);
-            bWasHandled = true;
-            break;
+        //case ('copyLinkBtn'):
+        //    CopyLinkButton = GFxClikWidget(Widget);
+        //    CopyLinkButton.AddEventListener('CLIK_press', Press_CopyLink);
+        //    CopyLinkButton.SetString("label", CopyLinkText);
+        //    bWasHandled = true;
+        //    break;
         case ('inviteSteamBtn'):
             InviteSteamButton = GFxClikWidget(Widget);
             InviteSteamButton.AddEventListener('CLIK_press', Press_InviteSteam);
@@ -425,7 +420,6 @@ defaultproperties
 {
     SubWidgetBindings.Add((WidgetName="applyBtn",WidgetClass=class'GFxClikWidget'))
     SubWidgetBindings.Add((WidgetName="backBtn",WidgetClass=class'GFxClikWidget'))
-    SubWidgetBindings.Add((WidgetName="copyLinkBtn",WidgetClass=class'GFxClikWidget'))
+    //SubWidgetBindings.Add((WidgetName="copyLinkBtn",WidgetClass=class'GFxClikWidget'))
     SubWidgetBindings.Add((WidgetName="inviteSteamBtn",WidgetClass=class'GFxClikWidget'))
-
 }

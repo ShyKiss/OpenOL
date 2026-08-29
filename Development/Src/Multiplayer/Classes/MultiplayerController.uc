@@ -76,7 +76,9 @@ var array<string>   CSAActBlacklist;
 // NATIVE INTERFACE
 // =============================================================================
 
-function string GetNetUsername() { return NativeGetUsername(); }
+function string GetNetUsername()      { return NativeGetUsername(); }
+function bool   GetNetSyncEnemies()   { return true; }
+function bool   GetNetSyncInteractable() { return true; }
 
 native function string NativeGetUsername();
 native function NativeInit();
@@ -200,9 +202,13 @@ event Possess(Pawn inPawn, bool bVehicleTransition)
         bPushablesIndexed = false;
         DoorChannel.BroadcastDoorStates("");
         PushableChannel.BroadcastPushableStates();
-        HeroChannel.SendRequestEnemies();
-        HeroChannel.SendRequestDoors();
-        HeroChannel.SendRequestPushables();
+        if (GetNetSyncEnemies())
+            HeroChannel.SendRequestEnemies();
+        if (GetNetSyncInteractable())
+        {
+            HeroChannel.SendRequestDoors();
+            HeroChannel.SendRequestPushables();
+        }
     }
     bSentPlayerDied = false;
     Hero = OLHero(inPawn);
@@ -252,6 +258,13 @@ event OnLevelBecameVisible(string PackageName)
     DoorChannel.BroadcastDoorStates(PackageName);
     // Pushables have no per-level filter — broadcast all (few in practice).
     PushableChannel.BroadcastPushableStates();
+    // Request authoritative state from server for newly visible objects —
+    // they may have been moved/opened by the other player while this level was unloaded.
+    if (GetNetSyncInteractable())
+    {
+        HeroChannel.SendRequestDoors();
+        HeroChannel.SendRequestPushables();
+    }
 }
 
 // =============================================================================

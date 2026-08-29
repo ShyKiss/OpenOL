@@ -4,7 +4,7 @@
 =============================================================================*/
 
 #include "WinDrvPrivate.h"
-#include "..\..\D3D9Drv\Src\OLImGui.h"
+#include "..\..\D3D9Drv\Src\ImGuiLinker.h"
 #include "EngineAudioDeviceClasses.h"
 // WWISEMODIF_START
 #include "AkAudioDevice.h"
@@ -629,7 +629,7 @@ void UWindowsClient::Tick( FLOAT DeltaTime )
 	// Process messages that have been deferred until now.
 	ProcessDeferredMessages();
 
-	// Update the viewports.
+// Update the viewports.
 	for(INT ViewportIndex = 0;ViewportIndex < Viewports.Num();ViewportIndex++)
 	{
 		if( !Viewports(ViewportIndex)->IsPlayInEditorViewport() )

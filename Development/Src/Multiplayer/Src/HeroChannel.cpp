@@ -7,6 +7,7 @@
 #include "EngineAnimClasses.h"
 #include "UDKBaseAnimationClasses.h"
 #include "OLGameAnimClasses.h"
+#include "OLUtilities.h"
 
 // ============================================================================
 // FindCornerMarkerNear — find closest AOLCornerMarker within radius to Pos.
@@ -48,7 +49,8 @@ void BuildStatePacket(AOLHero* Hero, UBOOL bSendingJumpGroundZ, FLOAT JumpGround
 {
     const FLOAT LocZ = bSendingJumpGroundZ ? JumpGroundZ : Hero->Location.Z;
 
-    N = PutU8 (B, 0,  MPKT_STATE);
+    N = PutU8 (B, 0,  CH_HERO);
+    N = PutU8 (B, N,  HERO_STATE);
     N = PutF32(B, N,  Hero->Location.X);
     N = PutF32(B, N,  Hero->Location.Y);
     N = PutF32(B, N,  LocZ);
@@ -101,13 +103,14 @@ void BuildStatePacket(AOLHero* Hero, UBOOL bSendingJumpGroundZ, FLOAT JumpGround
         N = PutI16(B, N, (INT)(rate * 1000.f));
     }
 
-    // Nick tail: [nick_len(1)][nick ASCII, max 32]
+    // Nick tail: [nick_utf8_len(1)][nick UTF-8 bytes, max 60]
     FString Nick = GMpConn.Username.Len() > 0 ? GMpConn.Username : FString(TEXT("Player"));
     if (Nick.Len() == 0) Nick = TEXT("Player");
-    INT NickLen = Min(Nick.Len(), 32);
-    N = PutU8(B, N, (BYTE)NickLen);
-    for (INT i = 0; i < NickLen; i++)
-        N = PutU8(B, N, (BYTE)((*Nick)[i] & 0x7F));
+    BYTE NickUtf8[64];
+    INT NickUtf8Len = TCHARToUTF8(NickUtf8, 61, *Nick); // max 60 bytes + guard
+    N = PutU8(B, N, (BYTE)NickUtf8Len);
+    for (INT i = 0; i < NickUtf8Len; i++)
+        N = PutU8(B, N, NickUtf8[i]);
 }
 
 // ============================================================================
@@ -177,17 +180,18 @@ UBOOL DecodeBinaryState(const BYTE* Data, INT DataLen, FHeroStatePacket& S)
         S.StrugglePlayRate = (FLOAT)SR / 1000.f;
     }
 
-    // Optional nick tail
+    // Optional nick tail: UTF-8 encoded
     S.bHasNick = FALSE;
     if (Off < DataLen)
     {
-        INT NickLen = 0;
-        Off = ReadU8(Data, Off, NickLen);
-        NickLen = Min(NickLen, Min(32, DataLen - Off));
-        for (INT i = 0; i < NickLen; i++)
-            S.Nick[i] = (TCHAR)(Data[Off + i] & 0x7F);
-        S.Nick[NickLen] = '\0';
-        S.bHasNick = (NickLen > 0);
+        INT NickUtf8Len = 0;
+        Off = ReadU8(Data, Off, NickUtf8Len);
+        NickUtf8Len = Min(NickUtf8Len, Min(63, DataLen - Off));
+        FString NickStr;
+        UTF8ToFString(Data + Off, NickUtf8Len, NickStr);
+        appStrncpy(S.Nick, *NickStr, 33);
+        S.bHasNick = (NickStr.Len() > 0);
+        Off += NickUtf8Len;
     }
 
     S.Health                    = Health;
@@ -628,9 +632,10 @@ void UHeroChannel::SendHeadRotation()
         ? GMultiplayerController->DebugCamRot
         : GMultiplayerController->Rotation;
 
-    BYTE B[1 + sizeof(FHeadRotPacket)];
+    BYTE B[2 + sizeof(FHeadRotPacket)];
     INT  N = 0;
-    N = PutU8(B, N, MPKT_HEAD_ROT);
+    N = PutU8(B, N, CH_HERO);
+    N = PutU8(B, N, HERO_HEAD_ROT);
     N = PutI32(B, N, ViewRot.Pitch);
     N = PutI32(B, N, ViewRot.Yaw - 16384); // match old UC: HEAD_ROT sent Yaw-16384
     GMpConn.SendBinary(B, N);
@@ -648,9 +653,10 @@ void UHeroChannel::SendMesh()
     if (CurPreset == LastSentMeshPreset) return;
     LastSentMeshPreset = CurPreset;
 
-    BYTE B[1 + sizeof(FMeshPresetPacket)];
+    BYTE B[2 + sizeof(FMeshPresetPacket)];
     INT  N = 0;
-    N = PutU8(B, N, MPKT_MESH_PRESET);
+    N = PutU8(B, N, CH_HERO);
+    N = PutU8(B, N, HERO_MESH_PRESET);
     N = PutU8(B, N, (BYTE)CurPreset);
     GMpConn.SendBinary(B, N);
 }
@@ -702,9 +708,10 @@ void UHeroChannel::SendCinematicAnimation()
         INT          PLen  = appStrlen(Path);
         if (PLen > 255) PLen = 255;
 
-        BYTE B[2 + 255];
+        BYTE B[3 + 255];
         INT  N = 0;
-        N = PutU8(B, N, MPKT_CINEMATIC_ANIM);
+        N = PutU8(B, N, CH_HERO);
+        N = PutU8(B, N, HERO_CINEMATIC_ANIM);
         if (CurAnim.Len() == 0)
         {
             // empty string after LM_Cinematic entered — send stop
@@ -722,9 +729,10 @@ void UHeroChannel::SendCinematicAnimation()
     else if (LastSentCinematicAnim.Len() > 0)
     {
         LastSentCinematicAnim = TEXT("");
-        BYTE B[2];
+        BYTE B[3];
         INT  N = 0;
-        N = PutU8(B, N, MPKT_CINEMATIC_ANIM);
+        N = PutU8(B, N, CH_HERO);
+        N = PutU8(B, N, HERO_CINEMATIC_ANIM);
         N = PutU8(B, N, 1); // bStop
         GMpConn.SendBinary(B, N);
     }
@@ -862,9 +870,10 @@ static void BuildAndSendSmtTransition(UHeroChannel* Ch, INT CurSMT)
         P.bPickupIsCollectible = Hero->ActivePickup->IsA(AOLCollectiblePickup::StaticClass()) ? 1 : 0;
     }
 
-    BYTE B[1 + sizeof(FSmtTypePacket)];
+    BYTE B[2 + sizeof(FSmtTypePacket)];
     INT  N = 0;
-    N = PutU8(B, N, MPKT_SMT_TYPE);
+    N = PutU8(B, N, CH_HERO);
+    N = PutU8(B, N, HERO_SMT_TYPE);
     appMemcpy(B + N, &P, sizeof(P));
     N += (INT)sizeof(P);
     GMpConn.SendBinary(B, N);
@@ -929,15 +938,16 @@ void UHeroChannel::SendSpecialMoveType()
 static void SendPickupLocPacket(BYTE PktType, const FVector& Loc)
 {
     INT IX = (INT)Loc.X, IY = (INT)Loc.Y, IZ = (INT)Loc.Z;
-    BYTE B[13];
-    B[0]  = PktType;
-    B[1]  = (BYTE)(IX        & 0xFF); B[2]  = (BYTE)((IX >>  8) & 0xFF);
-    B[3]  = (BYTE)((IX >> 16) & 0xFF); B[4]  = (BYTE)((IX >> 24) & 0xFF);
-    B[5]  = (BYTE)(IY        & 0xFF); B[6]  = (BYTE)((IY >>  8) & 0xFF);
-    B[7]  = (BYTE)((IY >> 16) & 0xFF); B[8]  = (BYTE)((IY >> 24) & 0xFF);
-    B[9]  = (BYTE)(IZ        & 0xFF); B[10] = (BYTE)((IZ >>  8) & 0xFF);
-    B[11] = (BYTE)((IZ >> 16) & 0xFF); B[12] = (BYTE)((IZ >> 24) & 0xFF);
-    GMpConn.SendBinary(B, 13);
+    BYTE B[14];
+    B[0]  = CH_WORLD;
+    B[1]  = PktType;
+    B[2]  = (BYTE)(IX        & 0xFF); B[3]  = (BYTE)((IX >>  8) & 0xFF);
+    B[4]  = (BYTE)((IX >> 16) & 0xFF); B[5]  = (BYTE)((IX >> 24) & 0xFF);
+    B[6]  = (BYTE)(IY        & 0xFF); B[7]  = (BYTE)((IY >>  8) & 0xFF);
+    B[8]  = (BYTE)((IY >> 16) & 0xFF); B[9]  = (BYTE)((IY >> 24) & 0xFF);
+    B[10] = (BYTE)(IZ        & 0xFF); B[11] = (BYTE)((IZ >>  8) & 0xFF);
+    B[12] = (BYTE)((IZ >> 16) & 0xFF); B[13] = (BYTE)((IZ >> 24) & 0xFF);
+    GMpConn.SendBinary(B, 14);
 }
 
 void UHeroChannel::SendPickupStart(INT CurSMT)
@@ -946,7 +956,7 @@ void UHeroChannel::SendPickupStart(INT CurSMT)
     AOLHero* Hero = Cast<AOLHero>(HeroPawn);
     if (!Hero || !Hero->ActivePickup) return;
     LastPickupLoc = Hero->ActivePickup->Location;
-    SendPickupLocPacket(MPKT_WORLD_PICKUP_START, LastPickupLoc);
+    SendPickupLocPacket(WORLD_PICKUP_START, LastPickupLoc);
 }
 
 void UHeroChannel::SendPickupState(INT CurSMT)
@@ -958,13 +968,13 @@ void UHeroChannel::SendPickupState(INT CurSMT)
     // Attach pickup mesh to dummy hand when anim notify fires
     if (CurSMT == SMT_PickupObject && Hero->bPickupNotifyFired)
     {
-        SendPickupLocPacket(MPKT_WORLD_PICKUP_ATTACH, LastPickupLoc);
+        SendPickupLocPacket(WORLD_PICKUP_ATTACH, LastPickupLoc);
         Hero->bPickupNotifyFired = FALSE;
     }
 
     // When SMT_PickupObject ends, signal remote to finalise pickup
     if (LastSentSpecialMove == SMT_PickupObject && CurSMT != SMT_PickupObject)
-        SendPickupLocPacket(MPKT_WORLD_PICKUP_STATE, LastPickupLoc);
+        SendPickupLocPacket(WORLD_PICKUP_STATE, LastPickupLoc);
 }
 
 void UHeroChannel::SendCornerPeekData() {}
@@ -976,10 +986,11 @@ void UHeroChannel::SendCornerPeekData() {}
 static void SendPlayerEvent(FPlayerEventPacket& Pkt)
 {
     if (!GMpConn.bIsHandshaked) return;
-    BYTE B[1 + sizeof(FPlayerEventPacket)];
-    B[0] = MPKT_PLAYER_EVENT;
-    appMemcpy(B + 1, &Pkt, sizeof(Pkt));
-    GMpConn.SendBinary(B, 1 + sizeof(Pkt));
+    BYTE B[2 + sizeof(FPlayerEventPacket)];
+    B[0] = CH_HERO;
+    B[1] = HERO_PLAYER_EVENT;
+    appMemcpy(B + 2, &Pkt, sizeof(Pkt));
+    GMpConn.SendBinary(B, 2 + sizeof(Pkt));
 }
 
 void UHeroChannel::SendPlayerHit(INT TargetPlayerID, FLOAT Damage, FLOAT KnockbackPower, FVector HitDir)
@@ -1096,6 +1107,7 @@ void UHeroChannel::OnBinaryPlayerEvent(INT SenderID, BYTE* Data, INT DataLen)
     }
     case PEVT_Grab:
     {
+        if (!GMpConn.SyncEnemies) return;
         FVector GrabTargetLoc(Pkt.LocX10[0] / 10.f,
                               Pkt.LocX10[1] / 10.f,
                               Pkt.LocX10[2] / 10.f);
@@ -1129,12 +1141,14 @@ void UHeroChannel::OnBinaryPlayerEvent(INT SenderID, BYTE* Data, INT DataLen)
     }
     case PEVT_Throw:
     {
+        if (!GMpConn.SyncEnemies) return;
         Hero->SpecialMoveTargetYaw = Pkt.ThrowRotX100000 / 100000.f;
         Hero->StartSpecialMove(67, FVector(0,0,0), FVector(0,0,0));
         break;
     }
     case PEVT_Kill:
     {
+        if (!GMpConn.SyncEnemies) return;
         FVector AnimStart(Pkt.LocX10[0] / 10.f,
                           Pkt.LocX10[1] / 10.f,
                           Pkt.LocX10[2] / 10.f);
@@ -1174,8 +1188,8 @@ void UHeroChannel::OnBinaryPlayerEvent(INT SenderID, BYTE* Data, INT DataLen)
 void UHeroChannel::SendPlayerDied()
 {
     if (!GMpConn.bIsHandshaked) return;
-    BYTE B[2] = { MPKT_PLAYER_LIFECYCLE, MPKT_LIFECYCLE_DIED };
-    GMpConn.SendBinary(B, 2);
+    BYTE B[3] = { CH_HERO, HERO_PLAYER_LIFECYCLE, LIFECYCLE_DIED };
+    GMpConn.SendBinary(B, 3);
     LastSentSpecialMove   = -1;
     LastSentMeshPreset    = -1;
     LastSentCinematicAnim = TEXT("");
@@ -1185,8 +1199,8 @@ void UHeroChannel::SendPlayerDied()
 void UHeroChannel::SendPlayerRespawned()
 {
     if (!GMpConn.bIsHandshaked) return;
-    BYTE B[2] = { MPKT_PLAYER_LIFECYCLE, MPKT_LIFECYCLE_RESPAWNED };
-    GMpConn.SendBinary(B, 2);
+    BYTE B[3] = { CH_HERO, HERO_PLAYER_LIFECYCLE, LIFECYCLE_RESPAWNED };
+    GMpConn.SendBinary(B, 3);
     LastSentSpecialMove   = -1;
     LastSentMeshPreset    = -1;
     LastSentCinematicAnim = TEXT("");
@@ -1196,29 +1210,29 @@ void UHeroChannel::SendPlayerRespawned()
 void UHeroChannel::SendDisconnect()
 {
     if (!GMpConn.bIsConnected) return;
-    BYTE B = MPKT_WORLD_DISCONNECT;
-    GMpConn.SendBinary(&B, 1);
+    BYTE B[2] = { CH_WORLD, WORLD_DISCONNECT };
+    GMpConn.SendBinary(B, 2);
 }
 
 void UHeroChannel::SendRequestEnemies()
 {
     if (!GMpConn.bIsHandshaked) return;
-    BYTE B = MPKT_WORLD_REQUEST_ENEMIES;
-    GMpConn.SendBinary(&B, 1);
+    BYTE B[2] = { CH_WORLD, WORLD_REQUEST_ENEMIES };
+    GMpConn.SendBinary(B, 2);
 }
 
 void UHeroChannel::SendRequestDoors()
 {
     if (!GMpConn.bIsHandshaked) return;
-    BYTE B = MPKT_WORLD_REQUEST_DOORS;
-    GMpConn.SendBinary(&B, 1);
+    BYTE B[2] = { CH_WORLD, WORLD_REQUEST_DOORS };
+    GMpConn.SendBinary(B, 2);
 }
 
 void UHeroChannel::SendRequestPushables()
 {
     if (!GMpConn.bIsHandshaked) return;
-    BYTE B = MPKT_WORLD_REQUEST_PUSHABLES;
-    GMpConn.SendBinary(&B, 1);
+    BYTE B[2] = { CH_WORLD, WORLD_REQUEST_PUSHABLES };
+    GMpConn.SendBinary(B, 2);
 }
 
 void UHeroChannel::OnBinaryPlayerLifecycle(INT SenderID, BYTE* Data, INT DataLen)
@@ -1234,7 +1248,7 @@ void UHeroChannel::OnBinaryPlayerLifecycle(INT SenderID, BYTE* Data, INT DataLen
 
     URemotePlayer* P = Controller->RemotePlayers(Idx);
 
-    if (Type == MPKT_LIFECYCLE_DIED)
+    if (Type == LIFECYCLE_DIED)
     {
         if (P->DummyPlayer)
         {
@@ -1246,7 +1260,7 @@ void UHeroChannel::OnBinaryPlayerLifecycle(INT SenderID, BYTE* Data, INT DataLen
         P->DummySMTLockUntil        = 0.f;
         P->bHasReceivedData         = FALSE;
     }
-    else if (Type == MPKT_LIFECYCLE_RESPAWNED)
+    else if (Type == LIFECYCLE_RESPAWNED)
     {
         if (P->DummyPlayer)
         {
@@ -1274,8 +1288,8 @@ void UHeroChannel::OnBinaryPlayerLifecycle(INT SenderID, BYTE* Data, INT DataLen
 
         // Rebuild remote enemy list for the respawned player's world state
         Controller->NativeDestroyRemoteEnemies();
-        if (GMpConn.bIsConnected)
-            { BYTE B = MPKT_WORLD_REQUEST_ENEMIES; GMpConn.SendBinary(&B, 1); }
+        if (GMpConn.bIsConnected && GMpConn.SyncEnemies)
+            { BYTE B[2] = { CH_WORLD, WORLD_REQUEST_ENEMIES }; GMpConn.SendBinary(B, 2); }
     }
 }
 
@@ -1902,6 +1916,21 @@ void FHeroChannelReceiveTicker::Tick(FLOAT DeltaTime)
         Dummy->bCollideWorld = FALSE;
         if (Dummy->CylinderComponent)
             Dummy->CylinderComponent->BlockActors = FALSE;
+
+        // Speedrun mode: hide body and head when dummy is within 200 units of the camera.
+        if (GMpConn.SpeedrunMode && Dummy->Mesh)
+        {
+            AOLPlayerController* LocalPC = Utils::GetOLPC();
+            FVector CamLoc(0.f, 0.f, 0.f);
+            FRotator CamRot(0, 0, 0);
+            if (LocalPC)
+                LocalPC->eventGetPlayerViewPoint(CamLoc, CamRot);
+            FLOAT DistSq = (Dummy->Location - CamLoc).SizeSquared();
+            UBOOL bTooClose = DistSq < (200.f * 200.f);
+            Dummy->Mesh->SetHiddenGame(bTooClose);
+            if (Dummy->DummyHeadMesh)
+                Dummy->DummyHeadMesh->SetHiddenGame(bTooClose);
+        }
 
         // Fire deferred SMT once LOC interpolation has brought the dummy close enough to GrabPos.
         // Mirrors how the local player walks up to the target before StartSpecialMove is called.

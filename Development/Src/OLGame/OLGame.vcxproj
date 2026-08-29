@@ -59,7 +59,7 @@
     <NMakeForcedUsingAssemblies Condition="'$(Configuration)|$(Platform)'=='BuiltWithUnrealBuildTool|Xbox 360'">$(NMakeForcedUsingAssemblies)</NMakeForcedUsingAssemblies>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='BuiltWithUnrealBuildTool|Win32'">
-    <IncludePath>$(ProjectDir)Inc;$(ProjectDir)Src;$(ProjectDir)..\Engine\Src;$(ProjectDir)..\Engine\Inc;$(ProjectDir)..\Core\Src;$(ProjectDir)..\Core\Inc;$(ProjectDir)..\UDKBase\Src;$(ProjectDir)..\UDKBase\Inc;$(ProjectDir)..\AkAudio\Src;$(ProjectDir)..\AkAudio\Inc;$(ProjectDir)..\Multiplayer\Inc;$(ProjectDir)..\..\External\openol_relay\include;$(ProjectDir)..\OnlineSubsystemSteamworks\Inc;$(ProjectDir)..\..\External\Steamworks\sdk\public;$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)Inc;$(ProjectDir)Src;$(ProjectDir)..\Engine\Src;$(ProjectDir)..\Engine\Inc;$(ProjectDir)..\Core\Src;$(ProjectDir)..\Core\Inc;$(ProjectDir)..\UDKBase\Src;$(ProjectDir)..\UDKBase\Inc;$(ProjectDir)..\AkAudio\Src;$(ProjectDir)..\AkAudio\Inc;$(ProjectDir)..\Multiplayer\Inc;$(ProjectDir)..\..\External\openol_relay\include;$(ProjectDir)..\OnlineSubsystemSteamworks\Inc;$(ProjectDir)..\..\External\Steamworks\sdk\public;$(ProjectDir)..\..\External\imgui\include;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup>
   </ItemDefinitionGroup>
@@ -517,6 +517,10 @@
     <None Include="Classes\OLUIMessage_ConsoleXbox.uc" />
     <None Include="Classes\OLUIPopupScreen.uc" />
     <None Include="Classes\OLUtils.uc" />
+    <None Include="Classes\OLBikMovieTexture.uc" />
+    <None Include="Classes\OLBikScreen.uc" />
+    <None Include="Classes\OLBrowser.uc" />
+    <None Include="Classes\OLVideoPlayer.uc" />
     <None Include="Classes\OLVoiceManager.uc" />
     <None Include="Classes\OLWaitPointComponent.uc" />
     <None Include="Classes\OLWaypoint.uc" />
@@ -545,6 +549,23 @@
     <ClCompile Include="Src\OLHero.cpp" />
     <ClCompile Include="Src\OLHeroCamera.cpp" />
     <ClCompile Include="Src\OLHUD.cpp" />
+    <ClCompile Include="Src\OLImGui.cpp" />
+    <ClCompile Include="Src\OLImGui_AssetPreview.cpp" />
+    <ClCompile Include="Src\OLCmd_Player.cpp" />
+    <ClCompile Include="Src\OLImGui_Actions.cpp" />
+    <ClCompile Include="Src\OLImGui_Player.cpp" />
+    <ClCompile Include="Src\OLImGui_Visuals.cpp" />
+    <ClCompile Include="Src\OLImGui_MultiplayerHUD.cpp" />
+    <ClCompile Include="Src\OLImGui_Spawns.cpp" />
+    <ClCompile Include="Src\OLImGui_Spawns_Enemies.cpp" />
+    <ClCompile Include="Src\OLImGui_Bindings.cpp" />
+    <ClCompile Include="Src\OLImGui_Console.cpp" />
+    <ClCompile Include="Src\OLImGui_Locale.cpp" />
+    <ClCompile Include="Src\OLImGui_System.cpp" />
+    <ClCompile Include="Src\OLImGui_Scene.cpp" />
+    <ClCompile Include="Src\OLImGui_Relay.cpp" />
+    <ClCompile Include="Src\OLImGui_Checkpoints.cpp" />
+    <ClCompile Include="Src\OLImageLoader.cpp" />
     <ClCompile Include="Src\OLInventory.cpp" />
     <ClCompile Include="Src\OLNavigation.cpp" />
     <ClCompile Include="Src\OLOrbis.cpp" />
@@ -555,6 +576,11 @@
     <ClCompile Include="Src\OLTutorial.cpp" />
     <ClCompile Include="Src\OLUI.cpp" />
     <ClCompile Include="Src\OLUtilities.cpp" />
+    <ClCompile Include="Src\OLLinuxBridge.cpp" />
+    <ClCompile Include="Src\OLViewportSHM.cpp" />
+    <ClCompile Include="Src\OLEditorServer.cpp" />
+    <ClCompile Include="Src\OLBrowser.cpp" />
+    <ClCompile Include="Src\OLVideoPlayer.cpp" />
     <ClCompile Include="Src\OLVoiceManager.cpp" />
     <ClCompile Include="..\Multiplayer\Src\Multiplayer.cpp" />
     <ClCompile Include="..\Multiplayer\Src\MultiplayerLink.cpp" />
@@ -583,5 +609,9 @@
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
   </ImportGroup>
+  <ItemGroup>
+    <MASM Include="Src\OLLinuxSyscall.asm" />
+  </ItemGroup>
 </Project>

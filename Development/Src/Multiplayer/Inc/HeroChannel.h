@@ -1,7 +1,7 @@
 #pragma once
 #include "Multiplayer.h"
+#include "HeroChannelPackets.h"
 
-#define MPKT_STATE          0x01
 #define HERO_STATE_MIN_SIZE 62
 
 // Virtual SMT codes used only in the multiplayer layer for corner-peek transitions.

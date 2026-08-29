@@ -5,7 +5,7 @@
 
 #include "WinDrvPrivate.h"
 #include "EngineUserInterfaceClasses.h"
-#include "..\..\D3D9Drv\Src\OLImGui.h"
+#include "..\..\D3D9Drv\Src\ImGuiLinker.h"
 #include "GameFramework.h"
 #include "..\..\Launch\Resources\resource.h"
 #if WITH_WINTAB
@@ -653,6 +653,13 @@ void FWindowsViewport::UpdateWindow( UBOOL NewFullscreen, DWORD WindowStyle, INT
 	    }
 	    ::SetWindowPos(Window, hWndInsertAfter, WindowPosX, WindowPosY, WindowWidth, WindowHeight, Flags);
 	}
+	else if ( !ParentWindow && NewFullscreen && GIsGame )
+	{
+		// Borderless fullscreen: position and size the window to cover the primary monitor.
+		// D3D runs windowed, so we must do this manually (D3D won't move the window).
+		::SetWindowPos(Window, HWND_TOP, 0, 0, GPrimaryMonitorWidth, GPrimaryMonitorHeight,
+		               Flags | SWP_NOZORDER);
+	}
 }
 
 void FWindowsViewport::UpdateRenderDevice( UINT NewSizeX, UINT NewSizeY, UBOOL NewFullscreen, UBOOL bSaveResolutionSettings )
@@ -703,15 +710,30 @@ void FWindowsViewport::UpdateRenderDevice( UINT NewSizeX, UINT NewSizeY, UBOOL N
 	}
 
 
+	// Borderless fullscreen: D3D runs in windowed mode at primary monitor resolution.
+	// The window (WS_POPUP, 0,0) already covers the screen; D3D never takes exclusive
+	// ownership, so Alt+Tab never triggers device-lost.
+	// We pass windowed=FALSE to D3D but restore bIsFullscreen=TRUE afterwards so that
+	// all game-side IsFullscreen() checks (mouse lock, Alt+Enter toggle) keep working.
+	const UBOOL bWantBorderless = GIsGame && NewFullscreen;
+	if ( bWantBorderless )
+	{
+		NewSizeX      = (UINT)GPrimaryMonitorWidth;
+		NewSizeY      = (UINT)GPrimaryMonitorHeight;
+		NewFullscreen = FALSE;
+	}
+
 	// Initialize the viewport's render device.
 	if( NewSizeX && NewSizeY )
 	{
 		UpdateViewportRHI(FALSE,NewSizeX,NewSizeY,NewFullscreen);
 
-		// Update system settings which actually saves the resolution
+		// Update system settings which actually saves the resolution.
+		// Pass the logical fullscreen flag (bWantBorderless counts as fullscreen) so
+		// the game launches in the correct mode next time.
 		if ( bSaveResolutionSettings )
 		{
-			GSystemSettings.SetResolution(NewSizeX, NewSizeY, NewFullscreen);
+			GSystemSettings.SetResolution(NewSizeX, NewSizeY, bWantBorderless ? TRUE : NewFullscreen);
 		}
 	}
 	// #19088: Based on certain startup patterns, there can be a case when all viewports are destroyed, which in turn frees up the D3D device (which results in badness).
@@ -820,7 +842,7 @@ void FWindowsViewport::UpdateMouseLock( UBOOL bEnforceMouseLockRequestedFlag )
 	RECT ClipRect;
 	UBOOL bIsHardwareCursorVisible = (GEngine && GEngine->GameViewport && GEngine->GameViewport->bDisplayHardwareMouseCursor);
 	// While the ImGui overlay is open, treat the cursor as visible so the game doesn't hide or lock it.
-	if ( OLImGui_IsOverlayVisible() )
+	if ( !GIsEditor && OLImGui_IsOverlayVisible() )
 		bIsSystemCursorVisible = TRUE;
 	UBOOL bIsAnyCursorVisible = bIsSystemCursorVisible || bIsHardwareCursorVisible;
 	UBOOL bClipRectValid = (::GetClipCursor( &ClipRect ) != 0);
@@ -1566,28 +1588,42 @@ LONG FWindowsViewport::ViewportWndProc( UINT Message, WPARAM wParam, LPARAM lPar
 		return DefWindowProc( Window, Message, wParam, lParam );
 	}
 
-	// Forward messages to ImGui (input handling)
-	OLImGui_WndProcHandler(Window, Message, wParam, lParam);
-
-	// F6 toggles the ImGui overlay
-	if (Message == WM_KEYDOWN && wParam == VK_F6)
+	if (!GIsEditor)
 	{
-		OLImGui_ToggleOverlay();
-	}
+		// Forward messages to ImGui (input handling)
+		OLImGui_WndProcHandler(Window, Message, wParam, lParam);
 
-	// While the overlay is open, block keyboard and mouse button input to the game.
-	if ( OLImGui_IsOverlayVisible() )
-	{
-		switch ( Message )
+		// Configurable overlay toggle key (default F6, saved in bindings.ini).
+		if (Message == WM_KEYDOWN && wParam == (WPARAM)OLImGui_GetOverlayToggleVK())
 		{
-		case WM_KEYDOWN:
-		case WM_KEYUP:
-		case WM_CHAR:
-		case WM_LBUTTONDOWN: case WM_LBUTTONUP:
-		case WM_RBUTTONDOWN: case WM_RBUTTONUP:
-		case WM_MBUTTONDOWN: case WM_MBUTTONUP:
-		case WM_MOUSEWHEEL:
-			return 0;
+			OLImGui_ToggleOverlay();
+		}
+
+		// Fire any ImGui action bound to this key (only when overlay is closed).
+		if (Message == WM_KEYDOWN && !OLImGui_IsOverlayVisible())
+		{
+			OLImGui_Bindings_FireKey((int)wParam);
+		}
+
+		// While the overlay is open, block keyboard and mouse button input to the game.
+		// WM_SYSKEYDOWN/UP must also be blocked to prevent Alt+Enter from triggering
+		// a fullscreen toggle (Resize -> SCOPED_SUSPEND_RENDERING_THREAD) while the
+		// render thread may be inside ImGui::Render(), which would corrupt ImGui state.
+		if ( OLImGui_IsOverlayVisible() )
+		{
+			switch ( Message )
+			{
+			case WM_KEYDOWN:
+			case WM_KEYUP:
+			case WM_SYSKEYDOWN:
+			case WM_SYSKEYUP:
+			case WM_CHAR:
+			case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+			case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+			case WM_MBUTTONDOWN: case WM_MBUTTONUP:
+			case WM_MOUSEWHEEL:
+				return 0;
+			}
 		}
 	}
 
@@ -1654,34 +1690,16 @@ LONG FWindowsViewport::ViewportWndProc( UINT Message, WPARAM wParam, LPARAM lPar
 			const UBOOL bIsActivating = ( LOWORD(wParam) == WA_ACTIVE || LOWORD(wParam) == WA_CLICKACTIVE );
 
 			// We only care about special handling of render thread and device lost in game, as the
-			// editor never runs in full screen
+			// editor never runs in full screen.
+			// NOTE: render thread stop/start on deactivation/activation is intentionally removed.
+			// The original code caused a deadlock: FlushRenderingCommands (inside StopRenderingThread)
+			// calls appWinPumpMessages which can re-dispatch WM_ACTIVATE and call StopRenderingThread
+			// again while the fence is still pending. The fullscreen toggle path
+			// (Resize -> UpdateD3DDeviceFromViewports -> SCOPED_SUSPEND_RENDERING_THREAD) already
+			// handles render thread suspension safely without going through WM_ACTIVATE.
 			if( GIsGame && !GIsPlayInEditorWorld )
 			{
-				// Stop the render thread when we lose focus in full screen, then restart it afterwards
-				static UBOOL bWantThreadedRendering = GIsThreadedRendering && GUseThreadedRendering;
-				if( bIsActivating )
-				{
-					// Being activated
-					if( !GIsThreadedRendering && bWantThreadedRendering )
-					{
-						// @todo: Probably shouldn't resume render thread until D3D device is no longer lost
-						GUseThreadedRendering = TRUE;
-						StartRenderingThread();
-					}
-				}
-				else
-				{
-					// Being deactivated, but are we in full screen?
-					if( IsFullscreen() )
-					{
-						if( GIsThreadedRendering )
-						{
-							bWantThreadedRendering = GUseThreadedRendering;
-							StopRenderingThread();
-							GUseThreadedRendering = FALSE;
-						}
-					}
-				}
+				(void)bIsActivating; // suppress unused variable warning
 			}
 		}
 		Client->DeferMessage(this,Message,wParam,lParam);
@@ -1775,25 +1793,25 @@ LONG FWindowsViewport::ViewportWndProc( UINT Message, WPARAM wParam, LPARAM lPar
 	case WM_IME_COMPOSITION:
 		{
 #if (WITH_GFx && WITH_GFx_IME)
-            // IME messages cannot be deferred because state accessed by other functions only remains valid with the message
-            UGameViewportClient* GameViewportClient = Cast<UGameViewportClient>(ViewportClient->GetUObject());
-            if (GameViewportClient && GameViewportClient->ScaleformInteraction)
-            {
-                UGFxMoviePlayer* Movie = GameViewportClient->ScaleformInteraction->GetFocusMovie(0);
-                if (Movie && Movie->pMovie && Movie->pMovie->pView)
-                {
-                    GFx::IMEWin32Event ev(GFx::IMEWin32Event::IME_Default, (UPInt)Window, Message, wParam, lParam, true);
-                    unsigned Result = Movie->pMovie->pView->HandleEvent(ev);
-                    if (Result & GFx::Movie::HE_NoDefaultAction)
-                    {
-                        return 0;
-                    }
-                    else
-                    {
-                        return DefWindowProc( Window, Message, wParam, lParam );
-                    }
-                }
-            }
+	    // IME messages cannot be deferred because state accessed by other functions only remains valid with the message
+	    UGameViewportClient* GameViewportClient = Cast<UGameViewportClient>(ViewportClient->GetUObject());
+	    if (GameViewportClient && GameViewportClient->ScaleformInteraction)
+	    {
+		UGFxMoviePlayer* Movie = GameViewportClient->ScaleformInteraction->GetFocusMovie(0);
+		if (Movie && Movie->pMovie && Movie->pMovie->pView)
+		{
+		    GFx::IMEWin32Event ev(GFx::IMEWin32Event::IME_Default, (UPInt)Window, Message, wParam, lParam, true);
+		    unsigned Result = Movie->pMovie->pView->HandleEvent(ev);
+		    if (Result & GFx::Movie::HE_NoDefaultAction)
+		    {
+			return 0;
+		    }
+		    else
+		    {
+			return DefWindowProc( Window, Message, wParam, lParam );
+		    }
+		}
+	    }
 #endif
 
 			Client->DeferMessage(this,Message,wParam,lParam);
@@ -1814,8 +1832,8 @@ LONG FWindowsViewport::ViewportWndProc( UINT Message, WPARAM wParam, LPARAM lPar
 
 #if (WITH_IME && WITH_GFx && WITH_GFx_IME)
     case WM_IME_SETCONTEXT:
-        // hide Windows IME windows
-        return DefWindowProc( Window, Message, wParam, 0 );
+	// hide Windows IME windows
+	return DefWindowProc( Window, Message, wParam, 0 );
 
     case WM_IME_NOTIFY:
     case WM_IME_CHAR:
@@ -1823,25 +1841,25 @@ LONG FWindowsViewport::ViewportWndProc( UINT Message, WPARAM wParam, LPARAM lPar
     case WM_IME_KEYDOWN:
     case WM_IME_ENDCOMPOSITION:
     case WM_INPUTLANGCHANGE:
-        if (ViewportClient)
-        {
-            // IME messages cannot be deferred because state accessed by other functions only remains valid with the message
-            UGameViewportClient* GameViewportClient = Cast<UGameViewportClient>(ViewportClient->GetUObject());
-            if (GameViewportClient && GameViewportClient->ScaleformInteraction)
-            {
-                UGFxMoviePlayer* Movie = GameViewportClient->ScaleformInteraction->GetFocusMovie(0);
-                if (Movie && Movie->pMovie && Movie->pMovie->pView)
-                {
-                    GFx::IMEWin32Event ev(GFx::IMEWin32Event::IME_Default,(UPInt)Window, Message, wParam, lParam, true);
-                    unsigned Result = Movie->pMovie->pView->HandleEvent(ev);
-                    if (Result & GFx::Movie::HE_NoDefaultAction)
-                    {
-                        return 0;
-                    }
-                }
-            }
-        }
-        return DefWindowProc( Window, Message, wParam, lParam );
+	if (ViewportClient)
+	{
+	    // IME messages cannot be deferred because state accessed by other functions only remains valid with the message
+	    UGameViewportClient* GameViewportClient = Cast<UGameViewportClient>(ViewportClient->GetUObject());
+	    if (GameViewportClient && GameViewportClient->ScaleformInteraction)
+	    {
+		UGFxMoviePlayer* Movie = GameViewportClient->ScaleformInteraction->GetFocusMovie(0);
+		if (Movie && Movie->pMovie && Movie->pMovie->pView)
+		{
+		    GFx::IMEWin32Event ev(GFx::IMEWin32Event::IME_Default,(UPInt)Window, Message, wParam, lParam, true);
+		    unsigned Result = Movie->pMovie->pView->HandleEvent(ev);
+		    if (Result & GFx::Movie::HE_NoDefaultAction)
+		    {
+			return 0;
+		    }
+		}
+	    }
+	}
+	return DefWindowProc( Window, Message, wParam, lParam );
 #endif
 
 	case WM_ERASEBKGND:

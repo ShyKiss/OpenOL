@@ -356,7 +356,8 @@ void AOLCheckpointList::PostBeginPlay()
 
 void AOLCheckpointList::BeginDestroy()
 {
-	GMasterCheckpointList = NULL;
+	if (GMasterCheckpointList == this)
+		GMasterCheckpointList = NULL;
 	Super::BeginDestroy();
 }
 
@@ -617,7 +618,8 @@ void AOLGameStateList::PostBeginPlay()
 
 void AOLGameStateList::BeginDestroy()
 {
-	GMasterGameStateList = NULL;
+	if (GMasterGameStateList == this)
+		GMasterGameStateList = NULL;
 	Super::BeginDestroy();
 }
 
@@ -696,7 +698,11 @@ TArray<FOLGameState>* AOLGameStateList::GetGameStateList()
 
 void AOLGameStateList::SetGameStateList(const TArray<FName>& activatedGS)
 {
-	check(GWorld->HasBegunPlay() && GMasterGameStateList);
+	if (!GWorld->HasBegunPlay() || !GMasterGameStateList)
+	{
+		warnf(TEXT("SetGameStateList: no master game state list, skipping"));
+		return;
+	}
 
 	GMasterGameStateList->ResetAllGameState();
 

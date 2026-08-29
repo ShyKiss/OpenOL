@@ -15,6 +15,7 @@
 #include "OLGame.h"
 #include "OLUtilities.h"
 #include "..\..\OnlineSubsystemSteamworks\Inc\OnlineSubsystemSteamworks.h"
+#include "OpenOLGlobals.h"
 #include "EngineAnimClasses.h"
 #include "UDKBaseAnimationClasses.h"
 #include "GameFrameworkAnimClasses.h"
@@ -156,7 +157,36 @@ UBOOL AOLPlayerController::Tick( FLOAT deltaSeconds, ELevelTick TickType )
 #endif
 	}
 
+	if (bPlacementMode)
+		TickPlacementMode();
+
 	return Super::Tick(deltaSeconds, TickType);
+}
+
+void AOLPlayerController::TickPlacementMode()
+{
+	if (!PlacementGhost || PlacementGhost->bDeleteMe)
+	{
+		bPlacementMode = FALSE;
+		PlacementGhost = NULL;
+		return;
+	}
+
+	FVector  CamLoc;
+	FRotator CamRot;
+	eventGetPlayerViewPoint(CamLoc, CamRot);
+
+	const FLOAT TraceLen = 2048.f;
+	FVector TraceEnd = CamLoc + FRotationMatrix(CamRot).GetAxis(0) * TraceLen;
+
+	FCheckResult Hit;
+	if (!GWorld->SingleLineCheck(Hit, this, TraceEnd, CamLoc, TRACE_World | TRACE_StopAtAnyHit))
+		PlacementGhost->SetLocation(Hit.Location);
+	else
+		PlacementGhost->SetLocation(TraceEnd);
+
+	FRotator GhostRot(0, appRound(PlacementYaw), 0);
+	PlacementGhost->SetRotation(GhostRot);
 }
 
 void AOLPlayerController::UpdateTouchZoom(FLOAT deltaSeconds)
@@ -367,6 +397,95 @@ UBOOL UOLPlayerInput::InputTouch(INT ControllerId, UINT Handle, ETouchType Type,
 	return TRUE;
 }
 
+// Maps a UE3 key FName to a Windows virtual key code for forwarding to the CEF browser.
+// Returns 0 if the key has no VK equivalent (mouse buttons, axes, etc.).
+static INT KeyNameToWindowsVK(FName Key)
+{
+    static TMap<FName,INT> sMap;
+    if (sMap.Num() == 0)
+    {
+        // Control keys
+        sMap.Set(KEY_BackSpace,  VK_BACK);
+        sMap.Set(KEY_Tab,        VK_TAB);
+        sMap.Set(KEY_Enter,      VK_RETURN);
+        sMap.Set(KEY_Pause,      VK_PAUSE);
+        sMap.Set(KEY_CapsLock,   VK_CAPITAL);
+        sMap.Set(KEY_Escape,     VK_ESCAPE);
+        sMap.Set(KEY_SpaceBar,   VK_SPACE);
+        sMap.Set(KEY_PageUp,     VK_PRIOR);
+        sMap.Set(KEY_PageDown,   VK_NEXT);
+        sMap.Set(KEY_End,        VK_END);
+        sMap.Set(KEY_Home,       VK_HOME);
+        sMap.Set(KEY_Left,       VK_LEFT);
+        sMap.Set(KEY_Up,         VK_UP);
+        sMap.Set(KEY_Right,      VK_RIGHT);
+        sMap.Set(KEY_Down,       VK_DOWN);
+        sMap.Set(KEY_Insert,     VK_INSERT);
+        sMap.Set(KEY_Delete,     VK_DELETE);
+        // Digits
+        sMap.Set(KEY_Zero,  0x30); sMap.Set(KEY_One,   0x31); sMap.Set(KEY_Two,   0x32);
+        sMap.Set(KEY_Three, 0x33); sMap.Set(KEY_Four,  0x34); sMap.Set(KEY_Five,  0x35);
+        sMap.Set(KEY_Six,   0x36); sMap.Set(KEY_Seven, 0x37); sMap.Set(KEY_Eight, 0x38);
+        sMap.Set(KEY_Nine,  0x39);
+        // Letters
+        sMap.Set(KEY_A,0x41); sMap.Set(KEY_B,0x42); sMap.Set(KEY_C,0x43); sMap.Set(KEY_D,0x44);
+        sMap.Set(KEY_E,0x45); sMap.Set(KEY_F,0x46); sMap.Set(KEY_G,0x47); sMap.Set(KEY_H,0x48);
+        sMap.Set(KEY_I,0x49); sMap.Set(KEY_J,0x4A); sMap.Set(KEY_K,0x4B); sMap.Set(KEY_L,0x4C);
+        sMap.Set(KEY_M,0x4D); sMap.Set(KEY_N,0x4E); sMap.Set(KEY_O,0x4F); sMap.Set(KEY_P,0x50);
+        sMap.Set(KEY_Q,0x51); sMap.Set(KEY_R,0x52); sMap.Set(KEY_S,0x53); sMap.Set(KEY_T,0x54);
+        sMap.Set(KEY_U,0x55); sMap.Set(KEY_V,0x56); sMap.Set(KEY_W,0x57); sMap.Set(KEY_X,0x58);
+        sMap.Set(KEY_Y,0x59); sMap.Set(KEY_Z,0x5A);
+        // Numpad
+        sMap.Set(KEY_NumPadZero,  VK_NUMPAD0); sMap.Set(KEY_NumPadOne,   VK_NUMPAD1);
+        sMap.Set(KEY_NumPadTwo,   VK_NUMPAD2); sMap.Set(KEY_NumPadThree, VK_NUMPAD3);
+        sMap.Set(KEY_NumPadFour,  VK_NUMPAD4); sMap.Set(KEY_NumPadFive,  VK_NUMPAD5);
+        sMap.Set(KEY_NumPadSix,   VK_NUMPAD6); sMap.Set(KEY_NumPadSeven, VK_NUMPAD7);
+        sMap.Set(KEY_NumPadEight, VK_NUMPAD8); sMap.Set(KEY_NumPadNine,  VK_NUMPAD9);
+        sMap.Set(KEY_Multiply, VK_MULTIPLY); sMap.Set(KEY_Add,      VK_ADD);
+        sMap.Set(KEY_Subtract, VK_SUBTRACT); sMap.Set(KEY_Decimal,  VK_DECIMAL);
+        sMap.Set(KEY_Divide,   VK_DIVIDE);
+        // F-keys
+        sMap.Set(KEY_F1,VK_F1);  sMap.Set(KEY_F2,VK_F2);  sMap.Set(KEY_F3,VK_F3);
+        sMap.Set(KEY_F4,VK_F4);  sMap.Set(KEY_F5,VK_F5);  sMap.Set(KEY_F6,VK_F6);
+        sMap.Set(KEY_F7,VK_F7);  sMap.Set(KEY_F8,VK_F8);  sMap.Set(KEY_F9,VK_F9);
+        sMap.Set(KEY_F10,VK_F10); sMap.Set(KEY_F11,VK_F11); sMap.Set(KEY_F12,VK_F12);
+        // Punctuation
+        sMap.Set(KEY_Semicolon,    VK_OEM_1);
+        sMap.Set(KEY_Equals,       VK_OEM_PLUS);
+        sMap.Set(KEY_Comma,        VK_OEM_COMMA);
+        sMap.Set(KEY_Underscore,   VK_OEM_MINUS);
+        sMap.Set(KEY_Period,       VK_OEM_PERIOD);
+        sMap.Set(KEY_Slash,        VK_OEM_2);
+        sMap.Set(KEY_Tilde,        VK_OEM_3);
+        sMap.Set(KEY_LeftBracket,  VK_OEM_4);
+        sMap.Set(KEY_Backslash,    VK_OEM_5);
+        sMap.Set(KEY_RightBracket, VK_OEM_6);
+        sMap.Set(KEY_Quote,        VK_OEM_7);
+        // Modifiers
+        sMap.Set(KEY_LeftShift,    VK_LSHIFT);
+        sMap.Set(KEY_RightShift,   VK_RSHIFT);
+        sMap.Set(KEY_LeftControl,  VK_LCONTROL);
+        sMap.Set(KEY_RightControl, VK_RCONTROL);
+        sMap.Set(KEY_LeftAlt,      VK_LMENU);
+        sMap.Set(KEY_RightAlt,     VK_RMENU);
+    }
+    INT* pVK = sMap.Find(Key);
+    return pVK ? *pVK : 0;
+}
+
+// Returns the focused OLBrowser actor (crosshair on screen), or NULL.
+static AOLBrowser* FindFocusedBrowser(AOLPlayerController* PC)
+{
+    if (!PC) return NULL;
+    for (FActorIterator It; It; ++It)
+    {
+        AOLBrowser* B = Cast<AOLBrowser>(*It);
+        if (B && B->bFocused && B->bRunning)
+            return B;
+    }
+    return NULL;
+}
+
 UBOOL UOLPlayerInput::InputKey(INT ControllerId, FName Key, enum EInputEvent Event, FLOAT AmountDepressed, UBOOL bGamepad)
 {
 	if (bUsingGamepad && Event == IE_Pressed && Utils::GetCheatManager())
@@ -376,6 +495,88 @@ UBOOL UOLPlayerInput::InputKey(INT ControllerId, FName Key, enum EInputEvent Eve
 			return TRUE;
 		}
 	}
+
+    // Forward input to focused browser (crosshair on screen)
+    AOLPlayerController* PC = Cast<AOLPlayerController>(GetOuter());
+
+    // Placement mode input — intercept before browser and game
+    if (PC && PC->bPlacementMode && Event == IE_Pressed)
+    {
+        if (Key == KEY_MouseScrollUp)
+        {
+            PC->PlacementYaw += 3640.f; // ~20 degrees
+            return TRUE;
+        }
+        if (Key == KEY_MouseScrollDown)
+        {
+            PC->PlacementYaw -= 3640.f;
+            return TRUE;
+        }
+        if (Key == KEY_LeftMouseButton)
+        {
+            // Caller (OLEnemyPlacer etc.) polls bPlacementMode + Ghost each frame;
+            // signal a confirm by setting the pending flag.
+            PC->bPlacementConfirmPending = TRUE;
+            return TRUE;
+        }
+        if (Key == KEY_RightMouseButton)
+        {
+            PC->eventEndPlacementMode();
+            return TRUE;
+        }
+    }
+
+    AOLBrowser* Browser = FindFocusedBrowser(PC);
+    if (Browser)
+    {
+        // Mouse scroll
+        if (Key == KEY_MouseScrollUp)
+        {
+            Browser->SendScroll(120);
+            return TRUE;
+        }
+        if (Key == KEY_MouseScrollDown)
+        {
+            Browser->SendScroll(-120);
+            return TRUE;
+        }
+
+        // Right mouse button
+        if (Key == KEY_RightMouseButton)
+        {
+            Browser->SendRightClick(Event == IE_Pressed || Event == IE_Repeat);
+            // Don't swallow — RMB may also be used for game functions, but here we return TRUE
+            // so the game doesn't react while looking at the screen
+            return TRUE;
+        }
+
+        // Left mouse button is already handled via bUseButtonDown in OLBrowser::Tick.
+        // Middle mouse button — send as scroll click (optional, pass through for now)
+        if (Key == KEY_MiddleMouseButton)
+            return TRUE; // swallow to avoid accidental game actions
+
+        // Keyboard: swallow and forward on press/repeat/release
+        if (Key != KEY_LeftMouseButton && Key != KEY_MouseX && Key != KEY_MouseY)
+        {
+            INT VK = KeyNameToWindowsVK(Key);
+            if (VK != 0)
+            {
+                UBOOL bDown = (Event == IE_Pressed || Event == IE_Repeat);
+                Browser->SendKey(VK, bDown);
+
+                // For printable characters on press, also send a CHAR event so the browser
+                // receives text input (key down alone is not enough for <input> fields).
+                if (bDown && Event == IE_Pressed && VK >= 0x20)
+                {
+                    // MapVirtualKey translates VK → character taking shift state into account
+                    UINT Char = MapVirtualKey((UINT)VK, MAPVK_VK_TO_CHAR);
+                    if (Char != 0)
+                        Browser->SendChar((INT)Char);
+                }
+                return TRUE;
+            }
+        }
+    }
 
 	return Super::InputKey(ControllerId, Key, Event, AmountDepressed, bGamepad);
 }
@@ -2326,6 +2527,80 @@ void AOLPlayerController::ClearAllProgress()
 	}
 }
 
+void AOLPlayerController::StartNewGameAtCheckpoint(const FString& CheckpointStr, UBOOL bSaveToDisk)
+{
+	FName CPName(*CheckpointStr);
+
+	// Find the checkpoint in the current world only — mirrors the original UC AllActors search.
+	// Do NOT fall back to TObjectIterator: a checkpoint found in a loaded-but-not-in-world
+	// package (e.g. the ImGui checkpoint tab) would trigger SaveCheckpoint and corrupt the
+	// PendingCheckpointAction that LoadSaveFile already set to Checkpoint_Load.
+	AOLCheckpoint* StartCP = NULL;
+	for (FActorIterator It; It; ++It)
+	{
+		AOLCheckpoint* CP = Cast<AOLCheckpoint>(*It);
+		if (CP && !CP->IsPendingKill() && CP->CheckpointName == CPName)
+		{
+			StartCP = CP;
+			break;
+		}
+	}
+	if (!StartCP)
+		return;
+
+debugf(TEXT("SNGAC: StopAllSounds"));
+	if (HUD && HUD->eventIsMainMenuOpen())
+		StopAllSounds();
+
+	debugf(TEXT("SNGAC: HideMenu"));
+	if (HUD)
+	{
+		UFunction* HideMenuFn = HUD->FindFunction(FName(TEXT("HideMenu")));
+		if (HideMenuFn) HUD->ProcessEvent(HideMenuFn, NULL);
+	}
+
+	debugf(TEXT("SNGAC: Ghost"));
+	if (bDebugGhost && CheatManager)
+	{
+		UOLCheatManager* CM = Cast<UOLCheatManager>(CheatManager);
+		if (CM)
+		{
+			UFunction* GhostFn = CM->FindFunction(FName(TEXT("Ghost")));
+			if (GhostFn) CM->ProcessEvent(GhostFn, NULL);
+		}
+	}
+
+	debugf(TEXT("SNGAC: UnPossess+DestroyHero"));
+	AOLHero* Hero = HeroPawn;
+	eventUnPossess();
+	if (Hero) GWorld->DestroyActor(Hero);
+
+	debugf(TEXT("SNGAC: ClearAllProgress"));
+	ClearAllProgress();
+
+	UOLEngine* Engine = Cast<UOLEngine>(GEngine);
+	AOLGame* CurrentGame = Cast<AOLGame>(GWorld->GetGameInfo());
+
+	if (CurrentGame)
+	{
+		debugf(TEXT("SNGAC: SaveCheckpoint"));
+		if (Engine)
+			Engine->SaveCheckpoint(StartCP->CheckpointName, bSaveToDisk);
+
+		CurrentGame->CurrentCheckpointName = StartCP->CheckpointName;
+
+		debugf(TEXT("SNGAC: RestartPlayer"));
+		UFunction* RestartFn = CurrentGame->FindFunction(FName(TEXT("RestartPlayer")));
+		if (RestartFn)
+		{
+			struct { APlayerController* PC; } Parms;
+			Parms.PC = this;
+			CurrentGame->ProcessEvent(RestartFn, &Parms);
+		}
+		debugf(TEXT("SNGAC: done"));
+	}
+}
+
 UBOOL AOLPlayerController::ShippingCheat_GiveAllCheckpoints()
 {
 	UOLEngine* olengine = Cast<UOLEngine>(GEngine);
@@ -2856,7 +3131,13 @@ void AOLPlayerController::ProcessFreeCam(FLOAT deltaSeconds)
 	FRotationMatrix rotMat(DebugCamRot);
 	rotMat.GetAxes(freeCamX, freeCamY, freeCamZ);
 
-	FVector delta = PlayerInput->aBaseY*freeCamX + PlayerInput->aStrafe*freeCamY;
+	// aStrafe is zeroed by IsMoveInputIgnored() (active during LM_Cinematic / Kismet cinematic mode).
+	// RawJoyRight is captured before that zeroing and holds the raw strafe axis value.
+	// Scale it by MoveStrafeSpeed (same scale PostProcessInput would apply) to match aBaseY.
+	FLOAT strafeAxis = PlayerInput->aStrafe;
+	if (strafeAxis == 0.f && PlayerInput->RawJoyRight != 0.f)
+		strafeAxis = PlayerInput->RawJoyRight * PlayerInput->MoveStrafeSpeed;
+	FVector delta = PlayerInput->aBaseY*freeCamX + strafeAxis*freeCamY;
 
 	FLOAT freeCamSpeed = DebugFreeCamSpeed;
 
@@ -2969,7 +3250,12 @@ UBOOL AOLPlayerController::NativeParseInviteLink(const FString& Link, FString& O
 FString AOLPlayerController::NativeGetMySteamID()
 {
     if (GSteamUser)
-        return FString::Printf(TEXT("%llu"), (unsigned long long)GSteamUser->GetSteamID().ConvertToUint64());
+    {
+        QWORD SID = (QWORD)GSteamUser->GetSteamID().ConvertToUint64();
+        debugf(NAME_Log, TEXT("NativeGetMySteamID: %llu"), (unsigned long long)SID);
+        return FString::Printf(TEXT("%llu"), (unsigned long long)SID);
+    }
+    debugf(NAME_Log, TEXT("NativeGetMySteamID: GSteamUser is NULL"));
     return TEXT("");
 }
 
@@ -2977,6 +3263,88 @@ void AOLPlayerController::NativeOpenSteamFriendsOverlay()
 {
     if (GSteamFriends)
         GSteamFriends->ActivateGameOverlay("friends");
+}
+
+// Forward declarations for functions defined later in this file.
+extern "C" void SetRelayRichPresence(const char* RoomCode);
+extern "C" void ClearRelayRichPresence();
+
+void AOLPlayerController::NativeSetRelayRichPresence(const FString& RoomCode)
+{
+    SetRelayRichPresence(TCHAR_TO_UTF8(*RoomCode));
+}
+
+void AOLPlayerController::NativeClearRelayRichPresence()
+{
+    ClearRelayRichPresence();
+}
+
+// ---------------------------------------------------------------------------
+// Relay control — start/stop the embedded relay and query its state.
+// ---------------------------------------------------------------------------
+
+// RelayThread.h pulls in winsock2, but we already have the guard at the top of this file.
+#include "..\..\Multiplayer\Inc\RelayThread.h"
+
+void AOLPlayerController::NativeStartRelay(INT Port)
+{
+    if (GRelayThread.IsRunning())
+        return;
+    GRelayThread.StartRelay((WORD)Port, "OpenOL", "openol_relay.db");
+    SetRelayRichPresence("DEFAULT");
+}
+
+void AOLPlayerController::NativeStopRelay()
+{
+    GRelayThread.StopRelay();
+    ClearRelayRichPresence();
+}
+
+UBOOL AOLPlayerController::NativeIsRelayRunning()
+{
+    return GRelayThread.IsRunning();
+}
+
+void AOLPlayerController::NativeConnectLocal(INT Port)
+{
+    // Local (non-P2P) connect to 127.0.0.1 — used when the player is hosting their own relay.
+    // Avoids pulling the entire Multiplayer header chain into the OLGame Unity build.
+    extern void GMpConn_ConnectLocal(WORD);
+    GMpConn_ConnectLocal((WORD)Port);
+}
+
+// ---------------------------------------------------------------------------
+// Global helpers declared in OpenOLGlobals.h, implemented here (Steamworks available).
+// ---------------------------------------------------------------------------
+
+extern "C" void GetSteamPersonaName(char* Out, int OutMax)
+{
+    Out[0] = '\0';
+    if (!GSteamFriends) return;
+    const char* Name = GSteamFriends->GetPersonaName();
+    if (!Name || !Name[0]) return;
+    _snprintf(Out, OutMax, "%s", Name);
+    Out[OutMax - 1] = '\0';
+}
+
+extern "C" void SetRelayRichPresence(const char* RoomCode)
+{
+    if (!GSteamFriends || !GSteamUser) return;
+    // Connect string: "<hostSteamID>/<room>" — parsed by OutlastLauncher (cold launch)
+    // and OnlineSubsystem Finalize() (hot join).
+    QWORD MySteamID = GSteamUser->GetSteamID().ConvertToUint64();
+    char ConnectStr[128];
+    _snprintf(ConnectStr, sizeof(ConnectStr), "%llu/%s", (unsigned long long)MySteamID, RoomCode);
+    GSteamFriends->SetRichPresence("connect",       ConnectStr);
+    GSteamFriends->SetRichPresence("steam_display", "#StatusPlayingMultiplayer");
+    debugf(NAME_Log, TEXT("RichPresence set: connect='%s'"), ANSI_TO_TCHAR(ConnectStr));
+}
+
+extern "C" void ClearRelayRichPresence()
+{
+    if (!GSteamFriends) return;
+    GSteamFriends->ClearRichPresence();
+    debugf(NAME_Log, TEXT("RichPresence cleared"));
 }
 
 void AOLPlayerController::NativeConnectP2P(const FString& HostSteamID, INT RelayPort,
@@ -3233,16 +3601,19 @@ void AOLPlayerController::DrawDebug()
 
 		if (HeroPawn && (bDebugFreeCam || bDebugFixedCam) && !bDebugGhost)
 		{
-			DrawDebugSphere( HeroPawn->Location, 5.0f, 6, 16, 128, 46 );
-			DrawDebugSphere( HeroPawn->Mesh->LocalToWorld.GetOrigin(), 2.0f, 6, 128, 16, 16 );
-			DrawDebugCylinder( HeroPawn->CylinderComponent->Bounds.Origin - FVector(0, 0, HeroPawn->CylinderComponent->CollisionHeight), HeroPawn->CylinderComponent->Bounds.Origin + FVector(0, 0, HeroPawn->CylinderComponent->CollisionHeight), HeroPawn->CylinderComponent->CollisionRadius, 10, 0, 60, 60);
-			DrawDebugSphere( HeroPawn->EyeLocation, 5.0f, 6, 32, 255, 92 );
-			DrawDebugLine( HeroPawn->EyeLocation, HeroPawn->EyeLocation + 50.0f*HeroPawn->EyeRotation.Vector(), 32, 255, 92 );
+			if (false)
+			{
+				DrawDebugSphere( HeroPawn->Location, 5.0f, 6, 16, 128, 46 );
+				DrawDebugSphere( HeroPawn->Mesh->LocalToWorld.GetOrigin(), 2.0f, 6, 128, 16, 16 );
+				DrawDebugCylinder( HeroPawn->CylinderComponent->Bounds.Origin - FVector(0, 0, HeroPawn->CylinderComponent->CollisionHeight), HeroPawn->CylinderComponent->Bounds.Origin + FVector(0, 0, HeroPawn->CylinderComponent->CollisionHeight), HeroPawn->CylinderComponent->CollisionRadius, 10, 0, 60, 60);
+				DrawDebugSphere( HeroPawn->EyeLocation, 5.0f, 6, 32, 255, 92 );
+				DrawDebugLine( HeroPawn->EyeLocation, HeroPawn->EyeLocation + 50.0f*HeroPawn->EyeRotation.Vector(), 32, 255, 92 );
 
-			FVector camPos = HeroPawn->Mesh->GetBoneLocation(Utils::GetCameraBoneName());
-			FRotator camRot = HeroPawn->Mesh->GetBoneQuaternion(Utils::GetCameraBoneName()).Rotator();
-			DrawDebugSphere(camPos, 3.0f, 6, 235, 60, 60);
-			DrawDebugLine(camPos, camPos + 50.0f*camRot.Vector(), 235, 60, 60);
+				FVector camPos = HeroPawn->Mesh->GetBoneLocation(Utils::GetCameraBoneName());
+				FRotator camRot = HeroPawn->Mesh->GetBoneQuaternion(Utils::GetCameraBoneName()).Rotator();
+				DrawDebugSphere(camPos, 3.0f, 6, 235, 60, 60);
+				DrawDebugLine(camPos, camPos + 50.0f*camRot.Vector(), 235, 60, 60);
+			}
 
 			if (Utils::GetCheatManager()->bDebugCamera)
 			{
@@ -3258,5 +3629,82 @@ void AOLPlayerController::DrawDebug()
 		Utils::GetCheatManager()->DrawDebug();
 	}
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// AOLPlayerController::RayIntersectsOBB (native UC function)
+// Tests a ray against a StaticMeshComponent's OBB by transforming the ray
+// into local space and doing a slab test against the mesh asset's extents.
+// ---------------------------------------------------------------------------
+UBOOL AOLPlayerController::RayIntersectsOBB(FVector RayOrigin, FVector RayDir,
+                                             UStaticMeshComponent* SMC, FVector& HitPos)
+{
+    if (!SMC || !SMC->StaticMesh || !SMC->IsAttached())
+        return FALSE;
+
+    // Transform ray into component local space (handles rotation + non-uniform scale)
+    FMatrix WorldToLocal = SMC->LocalToWorld.Inverse();
+    FVector LocalOrigin  = WorldToLocal.TransformFVector(RayOrigin);
+    FVector LocalDir     = WorldToLocal.TransformNormal(RayDir);
+
+    // Local-space extents of the mesh asset (unscaled — scale is baked into LocalToWorld)
+    FVector E = SMC->StaticMesh->Bounds.BoxExtent;
+    FVector C = SMC->StaticMesh->Bounds.Origin;
+
+    FVector BoxMin = C - E;
+    FVector BoxMax = C + E;
+
+    FLOAT tMin = -1e10f, tMax = 1e10f, t0, t1, Tmp;
+
+    // X slab
+    if (Abs(LocalDir.X) < 0.0001f)
+    { if (LocalOrigin.X < BoxMin.X || LocalOrigin.X > BoxMax.X) return FALSE; }
+    else
+    {
+        t0 = (BoxMin.X - LocalOrigin.X) / LocalDir.X;
+        t1 = (BoxMax.X - LocalOrigin.X) / LocalDir.X;
+        if (t0 > t1) { Tmp = t0; t0 = t1; t1 = Tmp; }
+        if (t0 > tMin) tMin = t0;
+        if (t1 < tMax) tMax = t1;
+        if (tMin > tMax) return FALSE;
+    }
+
+    // Y slab
+    if (Abs(LocalDir.Y) < 0.0001f)
+    { if (LocalOrigin.Y < BoxMin.Y || LocalOrigin.Y > BoxMax.Y) return FALSE; }
+    else
+    {
+        t0 = (BoxMin.Y - LocalOrigin.Y) / LocalDir.Y;
+        t1 = (BoxMax.Y - LocalOrigin.Y) / LocalDir.Y;
+        if (t0 > t1) { Tmp = t0; t0 = t1; t1 = Tmp; }
+        if (t0 > tMin) tMin = t0;
+        if (t1 < tMax) tMax = t1;
+        if (tMin > tMax) return FALSE;
+    }
+
+    // Z slab
+    if (Abs(LocalDir.Z) < 0.0001f)
+    { if (LocalOrigin.Z < BoxMin.Z || LocalOrigin.Z > BoxMax.Z) return FALSE; }
+    else
+    {
+        t0 = (BoxMin.Z - LocalOrigin.Z) / LocalDir.Z;
+        t1 = (BoxMax.Z - LocalOrigin.Z) / LocalDir.Z;
+        if (t0 > t1) { Tmp = t0; t0 = t1; t1 = Tmp; }
+        if (t0 > tMin) tMin = t0;
+        if (t1 < tMax) tMax = t1;
+        if (tMin > tMax) return FALSE;
+    }
+
+    if (tMin < 0.0f) return FALSE; // box is behind the ray origin in local space
+
+    FVector LocalHit = LocalOrigin + LocalDir * tMin;
+    HitPos = SMC->LocalToWorld.TransformFVector(LocalHit);
+
+    // Sanity check in world space: hit must be in front of the ray origin
+    // (guards against negative Scale3D flipping local-space ray direction)
+    if (((HitPos - RayOrigin) | RayDir) < 0.0f)
+        return FALSE;
+
+    return TRUE;
 }
 

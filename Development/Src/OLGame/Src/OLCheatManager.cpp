@@ -1,4 +1,5 @@
 #include "OLGame.h"
+#include "OLImGui_Tabs.h"
 
 IMPLEMENT_CLASS(UOLCheatManager);
 
@@ -190,6 +191,7 @@ void UOLCheatManager::ResetWorldState()
 		OLPC->ResetWorldState();
 	}
 }
+
 
 void UOLCheatManager::ApplyCP(const FString& CPName)
 {

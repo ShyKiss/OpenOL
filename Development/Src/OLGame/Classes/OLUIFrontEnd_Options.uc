@@ -68,6 +68,7 @@ enum ENonProfileOption
 	NPO_DisableMotionBlur, // PC only, saved in config
 	NPO_Difficulty, // Saved in savegame
 	NPO_SmoothCamera, // PC only, saved in config
+	NPO_GrainEffect, // PC only, runtime via OLFXManager
 };
 
 struct OptionInfo
@@ -625,6 +626,7 @@ function FillOptionValuesFromProfile()
 function FillOptionValuesForList(out array<OptionInfo> OptionInfos)
 {
 	local OLEngine TheEngine;
+	local OLFXManager FXMgr;
 	local int i, CurrentOptionPSID, CurrentOptionValueInt;
 	local float CurrentOptionValueFloat;
 	local string CurrentOptionValueString;
@@ -687,6 +689,10 @@ function FillOptionValuesForList(out array<OptionInfo> OptionInfos)
 					OptionInfos[i].CurrentValueInt = TheEngine.bSmoothCamera ? 1 : 0;
 				}
 				break;
+			case NPO_GrainEffect:
+				FXMgr = class'OLFXManager'.static.GetFXManager();
+				OptionInfos[i].CurrentValueInt = (FXMgr != None && !FXMgr.bGrainDisabled) ? 1 : 0;
+				break;
 			case NPO_Difficulty:
 				if (GetGame() != None)
 				{
@@ -705,6 +711,7 @@ function FillOptionValuesForList(out array<OptionInfo> OptionInfos)
 function SetDefaultOptionValuesForList(out array<OptionInfo> OptionInfos)
 {
 	local OLEngine TheEngine;
+	local OLFXManager FXMgr;
 	local int i, CurrentOptionPSID, CurrentOptionValueInt, ListIndex;
 	local float CurrentOptionValueFloat;
 
@@ -760,6 +767,11 @@ function SetDefaultOptionValuesForList(out array<OptionInfo> OptionInfos)
 				{
 					TheEngine.SetSmoothCamera(false);
 				}
+				break;
+			case NPO_GrainEffect:
+				FXMgr = class'OLFXManager'.static.GetFXManager();
+				if (FXMgr != None)
+					FXMgr.bGrainDisabled = false;
 				break;
 			case NPO_Difficulty:
 				if (GetGame().DifficultyMode != EDM_Insane)
@@ -874,6 +886,7 @@ function TabChanged(GFxClikWidget.EventData ev)
 function bool SaveSettingsForList(array<OptionInfo> OptionInfos)
 {
 	local OLEngine TheEngine;
+	local OLFXManager FXMgr;
 	local int i, CurrentOptionPSID;
 	local OptionInfo CurrentOptionInfo;
 	local float OptionProfileValue_Float;
@@ -989,6 +1002,24 @@ function bool SaveSettingsForList(array<OptionInfo> OptionInfos)
 					}
 				}
 				break;
+			case NPO_GrainEffect:
+				FXMgr = class'OLFXManager'.static.GetFXManager();
+				if (FXMgr != None)
+				{
+					OptionOldValue_Bool = !FXMgr.bGrainDisabled;
+					FXMgr.bGrainDisabled = CurrentOptionInfo.CurrentValueInt == 0;
+					// Apply immediately to the current post effect
+					if (FXMgr.CurrentUberPostEffect != None)
+					{
+						if (FXMgr.bGrainDisabled)
+							FXMgr.CurrentUberPostEffect.GrainOpacity = 0.0;
+						else
+							FXMgr.CurrentUberPostEffect.GrainOpacity = FXMgr.CurrentUberPostEffect.Default.GrainOpacity;
+					}
+					if (OptionOldValue_Bool != (CurrentOptionInfo.CurrentValueInt != 0))
+						bPropertyChanged = true;
+				}
+				break;
 			case NPO_Difficulty:
 				OptionOldValue_Difficulty = GetGame().DifficultyMode;
 				GetGame().DifficultyMode = EDifficultyMode(CurrentOptionInfo.CurrentValueInt);
@@ -1009,6 +1040,7 @@ function bool SaveSettingsForList(array<OptionInfo> OptionInfos)
 function bool HasPropertyChangedInList(GFxObject OptionsList, array<OptionInfo> OptionInfos)
 {
 	local OLEngine TheEngine;
+	local OLFXManager FXMgr;
 	local int i, CurrentOptionPSID;
 	local OptionInfo CurrentOptionInfo;
 	local float OptionProfileValue_Float;
@@ -1107,6 +1139,14 @@ function bool HasPropertyChangedInList(GFxObject OptionsList, array<OptionInfo> 
 					{
 						bPropertyChanged = true;
 					}
+				}
+				break;
+			case NPO_GrainEffect:
+				FXMgr = class'OLFXManager'.static.GetFXManager();
+				if (FXMgr != None)
+				{
+					if ((CurrentOptionInfo.CurrentValueInt != 0) == FXMgr.bGrainDisabled)
+						bPropertyChanged = true;
 				}
 				break;
 			case NPO_Difficulty:
@@ -1523,11 +1563,13 @@ defaultproperties
 	GraphicsOptions(0) = (ProfileSettingId=PSI_TextureQuality,Type=OST_Dropdown)
 	GraphicsOptions(1) = (ProfileSettingId=PSI_ShadowsQuality,Type=OST_Dropdown)
 	GraphicsOptions(2) = (ProfileSettingId=PSI_EffectsQuality,Type=OST_Dropdown)
-	GraphicsOptions(3) = (bInProfile=FALSE,ProfileSettingId=PSI_Unknown,NonProfileId=NPO_DisableMotionBlur,Type=OST_CheckBox)
-	GraphicsOptions(4) = (ProfileSettingId=PSI_VSync,Type=OST_CheckBox)
-	GraphicsOptions(5) = (ProfileSettingId=PSI_Fullscreen,Type=OST_CheckBox)
-	GraphicsOptions(6) = (ProfileSettingId=PSI_Resolution,Type=OST_Dropdown)
-	GraphicsOptions(7) = (ProfileSettingId=PSI_GammaSetting,Type=OST_GammaButton)
+	GraphicsOptions(3) = (bInProfile=FALSE,ProfileSettingId=PSI_Unknown,NonProfileId=NPO_GrainEffect,Type=OST_CheckBox)
+	GraphicsOptions(4) = (ProfileSettingId=PSI_MaxFPS,Type=OST_Dropdown)
+	GraphicsOptions(5) = (bInProfile=FALSE,ProfileSettingId=PSI_Unknown,NonProfileId=NPO_DisableMotionBlur,Type=OST_CheckBox)
+	GraphicsOptions(6) = (ProfileSettingId=PSI_VSync,Type=OST_CheckBox)
+	GraphicsOptions(7) = (ProfileSettingId=PSI_Fullscreen,Type=OST_CheckBox)
+	GraphicsOptions(8) = (ProfileSettingId=PSI_Resolution,Type=OST_Dropdown)
+	GraphicsOptions(9) = (ProfileSettingId=PSI_GammaSetting,Type=OST_GammaButton)
 
 	ControlsOptions(0) = (ProfileSettingId=PSI_KB_MoveForward,Type=OST_KeyBinding)
 	ControlsOptions(1) = (ProfileSettingId=PSI_KB_MoveBackward,Type=OST_KeyBinding)

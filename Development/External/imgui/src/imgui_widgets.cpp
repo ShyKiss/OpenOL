@@ -752,6 +752,120 @@ bool ImGui::ButtonEx(const char* label, const ImVec2& size_arg, ImGuiButtonFlags
     RenderNavCursor(bb, id);
     RenderFrame(bb.Min, bb.Max, col, true, style.FrameRounding);
 
+    // Hover animation: a short glowing arc runs around the rounded button perimeter.
+    {
+        struct OLBtnAnim { ImGuiID id; float phase; bool prev_hovered; };
+        static OLBtnAnim pool[64];
+        static int pool_n = 0;
+
+        OLBtnAnim* entry = NULL;
+        for (int _i = 0; _i < pool_n; _i++)
+            if (pool[_i].id == id) { entry = &pool[_i]; break; }
+        if (!entry && pool_n < 64)
+        {
+            pool[pool_n].id           = id;
+            pool[pool_n].phase        = 0.f;
+            pool[pool_n].prev_hovered = false;
+            entry                     = &pool[pool_n++];
+        }
+
+        if (entry && !hovered)
+            entry->prev_hovered = false;
+
+        if (entry && hovered)
+        {
+            // Reset phase when cursor first enters the button.
+            if (!entry->prev_hovered)
+                entry->phase = 0.f;
+            entry->prev_hovered = true;
+            entry->phase += 0.6f * g.IO.DeltaTime;
+            if (entry->phase > 1.f) entry->phase -= 1.f;
+
+            // Sample rounded-rect perimeter into pts[].
+            // Matches ImGui PathArcToFast: 12-segment circle, 3 pts per corner.
+            static const float COS12[13] = { 1.f,0.866f,0.5f,0.f,-0.5f,-0.866f,-1.f,-0.866f,-0.5f,0.f,0.5f,0.866f,1.f };
+            static const float SIN12[13] = { 0.f,0.5f,0.866f,1.f,0.866f,0.5f,0.f,-0.5f,-0.866f,-1.f,-0.866f,-0.5f,0.f };
+
+            const float r  = style.FrameRounding;
+            const float x0 = bb.Min.x + r, y0 = bb.Min.y + r;
+            const float x1 = bb.Max.x - r, y1 = bb.Max.y - r;
+
+            // Corner defs: center + arc index range
+            float  ccx[4] = { x0, x1, x1, x0 };
+            float  ccy[4] = { y0, y0, y1, y1 };
+            int    ca0[4] = {  6,  9,  0,  3  };
+            int    ca1[4] = {  9, 12,  3,  6  };
+
+            const int NPTS = 64;
+            ImVec2 pts[NPTS];
+            float  lens[NPTS];
+            int    npts = 0;
+
+            for (int ci = 0; ci < 4; ci++)
+                for (int ai = ca0[ci]; ai <= ca1[ci] && npts < NPTS; ai++)
+                {
+                    pts[npts].x = ccx[ci] + COS12[ai] * r;
+                    pts[npts].y = ccy[ci] + SIN12[ai] * r;
+                    npts++;
+                }
+
+            if (npts >= 2)
+            {
+                // Compute segment lengths and total perimeter.
+                float total = 0.f;
+                for (int i = 0; i < npts; i++)
+                {
+                    int j = (i + 1) % npts;
+                    float dx = pts[j].x - pts[i].x, dy = pts[j].y - pts[i].y;
+                    lens[i] = ImSqrt(dx*dx + dy*dy);
+                    total  += lens[i];
+                }
+
+                const float arcLen = total * (1.f / 3.f);
+                float start        = entry->phase * total;
+                float end_         = start + arcLen;
+
+                ImDrawList* dl = window->DrawList;
+
+                // Three passes: outer glow, mid glow, bright core.
+                float pass_thick[3] = { 5.f,  3.f,  1.5f };
+                ImU32 pass_col  [3] = { IM_COL32(255,255,255,40), IM_COL32(255,255,255,90), IM_COL32(255,255,255,220) };
+
+                for (int pi = 0; pi < 3; pi++)
+                {
+                    float s0 = start, s1 = end_;
+                    // Two reps to handle wrap-around.
+                    for (int rep = 0; rep < 2; rep++)
+                    {
+                        float dist = 0.f;
+                        for (int i = 0; i < npts; i++)
+                        {
+                            int   j      = (i + 1) % npts;
+                            float seg_s  = dist;
+                            float seg_e  = dist + lens[i];
+
+                            if (seg_e > s0 && seg_s < s1)
+                            {
+                                float t0 = (s0 > seg_s ? (s0 - seg_s) / lens[i] : 0.f);
+                                float t1 = (s1 < seg_e ? (s1 - seg_s) / lens[i] : 1.f);
+                                ImVec2 p0(pts[i].x + (pts[j].x - pts[i].x) * t0,
+                                          pts[i].y + (pts[j].y - pts[i].y) * t0);
+                                ImVec2 p1(pts[i].x + (pts[j].x - pts[i].x) * t1,
+                                          pts[i].y + (pts[j].y - pts[i].y) * t1);
+                                dl->AddLine(p0, p1, pass_col[pi], pass_thick[pi]);
+                            }
+                            dist += lens[i];
+                        }
+                        // Shift window for second rep (wrap-around).
+                        s0 -= total;
+                        s1 -= total;
+                        if (s1 <= 0.f) break;
+                    }
+                }
+            }
+        }
+    }
+
     if (g.LogEnabled)
         LogSetNextTextDecoration("[", "]");
     RenderTextClipped(bb.Min + style.FramePadding, bb.Max - style.FramePadding, label, NULL, &label_size, style.ButtonTextAlign, &bb);
@@ -3884,6 +3998,105 @@ bool ImGui::InputText(const char* label, char* buf, size_t buf_size, ImGuiInputT
 {
     IM_ASSERT(!(flags & ImGuiInputTextFlags_Multiline)); // call InputTextMultiline()
     return InputTextEx(label, NULL, buf, (int)buf_size, ImVec2(0, 0), flags, callback, user_data);
+}
+
+bool ImGui::InputTextWithACPopup(const char* label, char* buf, size_t buf_size, ImGuiInputTextFlags flags, ImGuiInputTextCallback callback, void* user_data, const char* const* items, int item_count, int* selected_item, int* clicked_item)
+{
+    ImGuiContext& g = *GImGui;
+
+    if (clicked_item) *clicked_item = -1;
+
+    // Capture field geometry before InputText renders
+    ImVec2 field_pos = ImGui::GetCursorScreenPos();
+    float  field_w   = ImGui::CalcItemWidth();
+
+    bool has_ac = item_count > 0;
+
+    const int   visible = 5;
+    const float item_h  = ImGui::GetTextLineHeightWithSpacing();
+    const float pad     = ImGui::GetStyle().WindowPadding.y;
+    int         rows    = (has_ac && item_count < visible) ? item_count : (has_ac ? visible : 0);
+    float       pop_h   = item_h * rows + pad * 2.f;
+    float       px0     = field_pos.x, px1 = px0 + field_w;
+    float       py1     = field_pos.y, py0 = py1 - pop_h;
+
+    // Read IO before any widget can consume it
+    ImVec2 mp    = g.IO.MousePos;
+    float  wheel = g.IO.MouseWheel;
+    bool   over  = has_ac && mp.x >= px0 && mp.x <= px1 && mp.y >= py0 && mp.y <= py1;
+
+    // Wheel
+    if (over && wheel != 0.f)
+    {
+        if (wheel > 0.f && *selected_item > 0)               (*selected_item)--;
+        else if (wheel < 0.f && *selected_item < item_count - 1) (*selected_item)++;
+    }
+
+    // Click — detect on MouseReleased so the press on the overlay doesn't activate InputText
+    if (over && g.IO.MouseReleased[0])
+    {
+        int   start2 = *selected_item - visible / 2;
+        if (start2 + visible > item_count) start2 = item_count - visible;
+        if (start2 < 0) start2 = 0;
+        float cy = py0 + pad;
+        for (int i = start2; i < start2 + visible && i < item_count; ++i, cy += item_h)
+            if (mp.y >= cy && mp.y < cy + item_h)
+            {
+                if (clicked_item) *clicked_item = i;
+                *selected_item = 0;
+                break;
+            }
+    }
+
+    // Render InputText
+    bool submitted = InputTextEx(label, NULL, buf, (int)buf_size, ImVec2(0, 0),
+                                 flags & ~(ImGuiInputTextFlags_Multiline), callback, user_data);
+
+    // Draw overlay via foreground drawlist — no popup, no hit-test interference
+    if (has_ac)
+    {
+        if (*selected_item < 0)           *selected_item = 0;
+        if (*selected_item >= item_count)  *selected_item = item_count - 1;
+
+        int start = *selected_item - visible / 2;
+        if (start + visible > item_count) start = item_count - visible;
+        if (start < 0) start = 0;
+
+        ImDrawList* dl   = ImGui::GetForegroundDrawList();
+        ImU32 col_bg  = GetColorU32(ImGuiCol_PopupBg);
+        ImU32 col_sel = GetColorU32(ImVec4(0.26f, 0.59f, 0.98f, 0.35f));
+        ImU32 col_txt = GetColorU32(ImGuiCol_Text);
+        ImU32 col_hi  = IM_COL32(255, 255, 0, 255);
+
+        dl->AddRectFilled(ImVec2(px0, py0), ImVec2(px1, py1), col_bg);
+
+        // Find hovered row for visual highlight only (does not change keyboard selection)
+        int hovered = -1;
+        if (over)
+        {
+            float cy2 = py0 + pad;
+            for (int i = start; i < start + visible && i < item_count; ++i, cy2 += item_h)
+                if (mp.y >= cy2 && mp.y < cy2 + item_h)
+                    { hovered = i; break; }
+        }
+
+        float cy = py0 + pad;
+        float th = ImGui::GetTextLineHeight();
+        for (int i = start; i < start + visible && i < item_count; ++i, cy += item_h)
+        {
+            bool kbd_sel = (i == *selected_item);
+            bool hov_sel = (i == hovered);
+            if (kbd_sel)
+                dl->AddRectFilled(ImVec2(px0, cy), ImVec2(px1, cy + item_h), col_sel);
+            else if (hov_sel)
+                dl->AddRectFilled(ImVec2(px0, cy), ImVec2(px1, cy + item_h),
+                                  GetColorU32(ImGuiCol_HeaderHovered));
+            dl->AddText(ImVec2(px0 + 4.f, cy + (item_h - th) * 0.5f),
+                        (kbd_sel || hov_sel) ? col_hi : col_txt, items[i]);
+        }
+    }
+
+    return submitted;
 }
 
 bool ImGui::InputTextMultiline(const char* label, char* buf, size_t buf_size, const ImVec2& size, ImGuiInputTextFlags flags, ImGuiInputTextCallback callback, void* user_data)
@@ -9575,6 +9788,13 @@ static void ImGui::TabBarLayout(ImGuiTabBar* tab_bar)
     for (int section_n = 0; section_n < 3; section_n++)
     {
         ImGuiTabBarSection* section = &sections[section_n];
+        if (section_n == 1 && sections[0].TabCount == 0 && sections[2].TabCount == 0)
+        {
+            // No leading/trailing tabs: center the central section within the bar.
+            float center_offset = IM_TRUNC((tab_bar->BarRect.GetWidth() - section->Width) * 0.5f);
+            if (center_offset > 0.0f)
+                tab_offset = center_offset;
+        }
         if (section_n == 2)
             tab_offset = ImMin(ImMax(0.0f, tab_bar->BarRect.GetWidth() - section->Width), tab_offset);
 
@@ -10240,6 +10460,42 @@ bool    ImGui::TabItemEx(ImGuiTabBar* tab_bar, const char* label, bool* p_open, 
         ImDrawList* display_draw_list = window->DrawList;
         const ImU32 tab_col = GetColorU32((held || hovered) ? ImGuiCol_TabHovered : tab_contents_visible ? (tab_bar_focused ? ImGuiCol_TabSelected : ImGuiCol_TabDimmedSelected) : (tab_bar_focused ? ImGuiCol_Tab : ImGuiCol_TabDimmed));
         TabItemBackground(display_draw_list, bb, flags, tab_col);
+
+        // Animated underline: grows from center on hover, stays fully extended when selected.
+        {
+            struct OLTabAnim { ImGuiID id; float t; };
+            static OLTabAnim anim_pool[32] = {};
+            static int       anim_count    = 0;
+
+            // Find or create entry for this tab.
+            OLTabAnim* entry = NULL;
+            for (int _i = 0; _i < anim_count; _i++)
+                if (anim_pool[_i].id == id) { entry = &anim_pool[_i]; break; }
+            if (!entry && anim_count < 32)
+            {
+                anim_pool[anim_count].id = id;
+                anim_pool[anim_count].t  = 0.f;
+                entry = &anim_pool[anim_count++];
+            }
+
+            if (entry)
+            {
+                const float dt      = g.IO.DeltaTime;
+                const float SPEED   = 8.f; // full extend in ~0.125s
+                const bool  active  = tab_contents_visible || hovered || held;
+                entry->t = ImClamp(entry->t + (active ? SPEED : -SPEED) * dt, 0.f, 1.f);
+
+                if (entry->t > 0.f)
+                {
+                    const float cy    = bb.Max.y - 1.f;          // bottom edge
+                    const float cx    = (bb.Min.x + bb.Max.x) * 0.5f;
+                    const float half  = (bb.Max.x - bb.Min.x) * 0.5f * entry->t;
+                    const ImU32 col   = IM_COL32(255, 255, 255, (int)(200 * entry->t));
+                    display_draw_list->AddLine(ImVec2(cx - half, cy), ImVec2(cx + half, cy), col, 2.f);
+                }
+            }
+        }
+
         if (tab_contents_visible && (tab_bar->Flags & ImGuiTabBarFlags_DrawSelectedOverline) && style.TabBarOverlineSize > 0.0f)
         {
             // Might be moved to TabItemBackground() ?

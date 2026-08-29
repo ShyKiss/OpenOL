@@ -1029,7 +1029,10 @@ INT WINAPI WinMain( HINSTANCE hInInstance, HINSTANCE hPrevInstance, char*, INT n
 		return 0;
 #elif !WITH_EDITOR
 	static TCHAR ShippingCmdLine[4096];
-	appSprintf( ShippingCmdLine, TEXT("%s -seekfreeloadingpcconsole -nosteam"), CmdLine );
+	if( appStrstr(CmdLine, TEXT("-seekfreeloadingpcconsole")) )
+		appSprintf( ShippingCmdLine, TEXT("%s"), CmdLine );
+	else
+		appSprintf( ShippingCmdLine, TEXT("%s -seekfreeloadingpcconsole"), CmdLine );
 	CmdLine = ShippingCmdLine;
 #endif
 	

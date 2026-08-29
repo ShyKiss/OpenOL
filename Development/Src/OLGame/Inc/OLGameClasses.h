@@ -921,6 +921,23 @@ enum GamepadBindingsType
     op(GBT_A) \
     op(GBT_B) \
     op(GBT_C) 
+enum EFPSCap
+{
+    FPSC_30                 =0,
+    FPSC_62                 =1,
+    FPSC_120                =2,
+    FPSC_144                =3,
+    FPSC_240                =4,
+    FPSC_Unlimited          =5,
+    FPSC_MAX                =6,
+};
+#define FOREACH_ENUM_EFPSCAP(op) \
+    op(FPSC_30) \
+    op(FPSC_62) \
+    op(FPSC_120) \
+    op(FPSC_144) \
+    op(FPSC_240) \
+    op(FPSC_Unlimited) 
 enum ELanguage
 {
     EL_English              =0,
@@ -1230,6 +1247,89 @@ public:
 	virtual void CreateEdgesForPathObject( APylon* Py );
 	virtual EEdgeHandlingStatus AddStaticEdgeIntoThisPO( EEdgeHandlingStatus Status, const FVector& inV1, const FVector& inV2, TArray<FNavMeshPolyBase*>& ConnectedPolys, INT PolyAssocatedWithThisPO, FLOAT SupportedEdgeWidth=-1.0f, BYTE EdgeGroupID=MAXBYTE);
 	virtual UBOOL Verify();
+};
+
+class AOLBrowser : public AActor
+{
+public:
+    //## BEGIN PROPS OLBrowser
+    class UTexture2DDynamic* BrowserTexture;
+    INT BrowserWidth;
+    INT BrowserHeight;
+    class AOLBikScreen* TargetScreen;
+    FPointer ScreenMeshComponent;
+    BITFIELD bTextureAssigned:1;
+    BITFIELD bFocused:1;
+    BITFIELD bRunning:1;
+    FStringNoInit StartURL;
+    FPointer NativeHandle;
+    //## END PROPS OLBrowser
+
+    virtual void Open();
+    virtual void Close();
+    virtual void Navigate(const FString& URL);
+    virtual void SendClick(UBOOL bDown);
+    virtual void SendRightClick(UBOOL bDown);
+    virtual void SendScroll(INT DeltaY);
+    virtual void SendKey(INT WinKeyCode,UBOOL bDown);
+    virtual void SendChar(INT CharCode);
+    virtual void SetScreenMesh(class UStaticMeshComponent* Mesh);
+    DECLARE_FUNCTION(execOpen)
+    {
+        P_FINISH;
+        this->Open();
+    }
+    DECLARE_FUNCTION(execClose)
+    {
+        P_FINISH;
+        this->Close();
+    }
+    DECLARE_FUNCTION(execNavigate)
+    {
+        P_GET_STR(URL);
+        P_FINISH;
+        this->Navigate(URL);
+    }
+    DECLARE_FUNCTION(execSendClick)
+    {
+        P_GET_UBOOL(bDown);
+        P_FINISH;
+        this->SendClick(bDown);
+    }
+    DECLARE_FUNCTION(execSendRightClick)
+    {
+        P_GET_UBOOL(bDown);
+        P_FINISH;
+        this->SendRightClick(bDown);
+    }
+    DECLARE_FUNCTION(execSendScroll)
+    {
+        P_GET_INT(DeltaY);
+        P_FINISH;
+        this->SendScroll(DeltaY);
+    }
+    DECLARE_FUNCTION(execSendKey)
+    {
+        P_GET_INT(WinKeyCode);
+        P_GET_UBOOL(bDown);
+        P_FINISH;
+        this->SendKey(WinKeyCode,bDown);
+    }
+    DECLARE_FUNCTION(execSendChar)
+    {
+        P_GET_INT(CharCode);
+        P_FINISH;
+        this->SendChar(CharCode);
+    }
+    DECLARE_FUNCTION(execSetScreenMesh)
+    {
+        P_GET_OBJECT(UStaticMeshComponent,Mesh);
+        P_FINISH;
+        this->SetScreenMesh(Mesh);
+    }
+    DECLARE_CLASS(AOLBrowser,AActor,0,OLGame)
+    virtual void BeginDestroy();
+    virtual UBOOL Tick(FLOAT DeltaTime, ELevelTick TickType);
 };
 
 struct FCamcorderHudObjects
@@ -2891,6 +2991,11 @@ public:
     TArrayNoInit<class UMaterialInstanceConstant*> NVSensitiveMaterials;
     class UMaterialInstanceConstant* CameraGlitchMat;
     class UOLUberPostProcessEffect* CurrentUberPostEffect;
+    BITFIELD bGrainDisabled:1;
+    BITFIELD bShowingHurtEffect:1;
+    BITFIELD bShowingElectricityEffect:1;
+    BITFIELD bSwarmBlurActive:1;
+    BITFIELD bShatteredGlassEffectActive:1;
     class UParticleSystemComponent* ElectricSparksParticles;
     class AOLFXHolder* FXHolder;
     FName UberPostEffectName;
@@ -2903,11 +3008,6 @@ public:
     FLOAT LastSetElectricEffect;
     FLOAT CurrentHurtEffect;
     FLOAT LastSetHurtEffect;
-    BITFIELD bShowingHurtEffect:1;
-    BITFIELD bShowingElectricityEffect:1;
-    BITFIELD bSwarmBlurActive:1;
-    BITFIELD bShatteredGlassEffectActive:1;
-    SCRIPT_ALIGN;
     BYTE CurrentPPSMode;
     SCRIPT_ALIGN;
     struct FBlurData CurrentBlur;
@@ -4238,6 +4338,29 @@ public:
     DECLARE_CLASS(UOLMainHud,UGFxMoviePlayer,0|CLASS_Config,OLGame)
 	void Init();
 	void Update(FLOAT deltaTime);
+};
+
+class UOLNetworkConfig : public UObject
+{
+public:
+    //## BEGIN PROPS OLNetworkConfig
+    FStringNoInit IP;
+    FStringNoInit UdpPort;
+    FStringNoInit UserName;
+    FStringNoInit RoomCode;
+    FStringNoInit Password;
+    BITFIELD SyncInteractable:1;
+    BITFIELD SyncEnemies:1;
+    BITFIELD SyncMatinees:1;
+    BITFIELD SyncPickups:1;
+    BITFIELD SpeedrunMode:1;
+    FStringNoInit HostSteamID;
+    //## END PROPS OLNetworkConfig
+
+    DECLARE_CLASS(UOLNetworkConfig,UObject,0|CLASS_Config,OLGame)
+    static const TCHAR* StaticConfigName() {return TEXT("Multiplayer");}
+
+    NO_DEFAULT_CONSTRUCTOR(UOLNetworkConfig)
 };
 
 struct FGameplayParams
@@ -6937,6 +7060,19 @@ struct OLPlayerController_eventOnKismetRemoteEvent_Parms
     {
     }
 };
+struct OLPlayerController_eventEndPlacementMode_Parms
+{
+    OLPlayerController_eventEndPlacementMode_Parms(EEventParm)
+    {
+    }
+};
+struct OLPlayerController_eventBeginPlacementMode_Parms
+{
+    class AActor* Ghost;
+    OLPlayerController_eventBeginPlacementMode_Parms(EEventParm)
+    {
+    }
+};
 struct OLPlayerController_eventOnTravelComplete_Parms
 {
     OLPlayerController_eventOnTravelComplete_Parms(EEventParm)
@@ -6979,8 +7115,11 @@ public:
     BITFIELD bDebugFixedCam:1;
     BITFIELD bDebugFreeCam:1;
     BITFIELD bDebugGhost:1;
+    BITFIELD bBunnyHop:1;
     BITFIELD bSlowDownFPS:1;
     BITFIELD bApplyingRemoteDoorEvent:1;
+    BITFIELD bPlacementMode:1;
+    BITFIELD bPlacementConfirmPending:1;
     FName CurrentObjective;
     TArrayNoInit<FName> CompletedObjectives;
     INT NumBatteries;
@@ -7061,6 +7200,8 @@ public:
     INT InspectorHitIndex;
     TArrayNoInit<struct FInspectorHit> InspectorHits;
     FLOAT SlowDownFactor;
+    class AActor* PlacementGhost;
+    FLOAT PlacementYaw;
     //## END PROPS OLPlayerController
 
     virtual void NativePlayerMove(FLOAT DeltaTime);
@@ -7073,10 +7214,12 @@ public:
     virtual void SetPlayerFoundWhileHidden(class AOLEnemyPawn* SearchingEnemy);
     virtual void ForceActivateTouchEvent(class USeqEvent_Touch* TouchEvent);
     virtual void ObserverActivateCSA(class AOLCSA* CSA,UBOOL bConsumeActivation);
+    virtual UBOOL RayIntersectsOBB(FVector RayOrigin,FVector RayDir,class UStaticMeshComponent* SMC,FVector& HitPos);
     virtual void StopAllSounds();
     virtual void SavePersistentState();
     virtual void NativeCreateCheckpointRecord(struct FCheckpointRecord& Record);
     virtual void NativeApplyCheckpointRecord(const struct FCheckpointRecord& Record);
+    virtual void StartNewGameAtCheckpoint(const FString& CheckpointStr,UBOOL bSaveToDisk);
     virtual void SaveBeforeQuitting();
     virtual void ClearAllProgress();
     virtual UBOOL ShippingCheat_GiveAllCheckpoints();
@@ -7093,6 +7236,12 @@ public:
     virtual void NativeConnectP2P(const FString& HostSteamID,INT RelayPort,const FString& RoomCode,const FString& Password);
     virtual FString NativeGetMySteamID();
     virtual void NativeOpenSteamFriendsOverlay();
+    virtual void NativeSetRelayRichPresence(const FString& RoomCode);
+    virtual void NativeClearRelayRichPresence();
+    virtual void NativeStartRelay(INT Port);
+    virtual void NativeStopRelay();
+    virtual UBOOL NativeIsRelayRunning();
+    virtual void NativeConnectLocal(INT Port);
     DECLARE_FUNCTION(execNativePlayerMove)
     {
         P_GET_FLOAT(DeltaTime);
@@ -7145,6 +7294,15 @@ public:
         P_FINISH;
         this->ObserverActivateCSA(CSA,bConsumeActivation);
     }
+    DECLARE_FUNCTION(execRayIntersectsOBB)
+    {
+        P_GET_STRUCT(FVector,RayOrigin);
+        P_GET_STRUCT(FVector,RayDir);
+        P_GET_OBJECT(UStaticMeshComponent,SMC);
+        P_GET_STRUCT_REF(FVector,HitPos);
+        P_FINISH;
+        *(UBOOL*)Result=this->RayIntersectsOBB(RayOrigin,RayDir,SMC,HitPos);
+    }
     DECLARE_FUNCTION(execStopAllSounds)
     {
         P_FINISH;
@@ -7166,6 +7324,13 @@ public:
         P_GET_STRUCT_INIT_REF(struct FCheckpointRecord,Record);
         P_FINISH;
         this->NativeApplyCheckpointRecord(Record);
+    }
+    DECLARE_FUNCTION(execStartNewGameAtCheckpoint)
+    {
+        P_GET_STR(CheckpointStr);
+        P_GET_UBOOL(bSaveToDisk);
+        P_FINISH;
+        this->StartNewGameAtCheckpoint(CheckpointStr,bSaveToDisk);
     }
     DECLARE_FUNCTION(execSaveBeforeQuitting)
     {
@@ -7265,6 +7430,39 @@ public:
     {
         P_FINISH;
         this->NativeOpenSteamFriendsOverlay();
+    }
+    DECLARE_FUNCTION(execNativeSetRelayRichPresence)
+    {
+        P_GET_STR(RoomCode);
+        P_FINISH;
+        this->NativeSetRelayRichPresence(RoomCode);
+    }
+    DECLARE_FUNCTION(execNativeClearRelayRichPresence)
+    {
+        P_FINISH;
+        this->NativeClearRelayRichPresence();
+    }
+    DECLARE_FUNCTION(execNativeStartRelay)
+    {
+        P_GET_INT(Port);
+        P_FINISH;
+        this->NativeStartRelay(Port);
+    }
+    DECLARE_FUNCTION(execNativeStopRelay)
+    {
+        P_FINISH;
+        this->NativeStopRelay();
+    }
+    DECLARE_FUNCTION(execNativeIsRelayRunning)
+    {
+        P_FINISH;
+        *(UBOOL*)Result=this->NativeIsRelayRunning();
+    }
+    DECLARE_FUNCTION(execNativeConnectLocal)
+    {
+        P_GET_INT(Port);
+        P_FINISH;
+        this->NativeConnectLocal(Port);
     }
     void eventOnLevelBecameVisible(const FString& PackageName)
     {
@@ -7392,6 +7590,16 @@ public:
         Parms.EventName=EventName;
         ProcessEvent(FindFunctionChecked(OLGAME_OnKismetRemoteEvent),&Parms);
     }
+    void eventEndPlacementMode()
+    {
+        ProcessEvent(FindFunctionChecked(OLGAME_EndPlacementMode),NULL);
+    }
+    void eventBeginPlacementMode(class AActor* Ghost)
+    {
+        OLPlayerController_eventBeginPlacementMode_Parms Parms(EC_EventParm);
+        Parms.Ghost=Ghost;
+        ProcessEvent(FindFunctionChecked(OLGAME_BeginPlacementMode),&Parms);
+    }
     void eventOnTravelComplete()
     {
         ProcessEvent(FindFunctionChecked(OLGAME_OnTravelComplete),NULL);
@@ -7456,6 +7664,7 @@ private:
 	void UpdateStruggle(FLOAT deltaSeconds);
 	void UpdateOrbisController(FLOAT deltaSeconds);
 	void UpdateTouchZoom(FLOAT deltaSeconds);
+	void TickPlacementMode();
 
 	void ProcessCompletedRecording(AOLRecordingMarker* recordingMarker);
 
@@ -7575,6 +7784,10 @@ public:
     BYTE PushableType;
     class UStaticMeshComponent* Mesh;
     class UDynamicLightEnvironmentComponent* LightEnvironment;
+    FLOAT NetPushLastTime;
+    INT LocalPushSeq;
+    INT RemotePushSeq;
+    INT PushStopRepeat;
     FLOAT CurrentDisplacement;
     FLOAT CurrentVelocity;
     FLOAT CurrentPhase;
@@ -8245,6 +8458,37 @@ public:
     NO_DEFAULT_CONSTRUCTOR(UOLUtils)
 };
 
+class AOLVideoPlayer : public AActor
+{
+public:
+    //## BEGIN PROPS OLVideoPlayer
+    class UTexture2DDynamic* VideoTexture;
+    INT VideoWidth;
+    INT VideoHeight;
+    BITFIELD bPlaying:1;
+    BITFIELD bTextureAssigned:1;
+    class AOLBikScreen* TargetScreen;
+    FPointer NativeHandle;
+    //## END PROPS OLVideoPlayer
+
+    virtual void Play(const FString& URL);
+    virtual void Stop();
+    DECLARE_FUNCTION(execPlay)
+    {
+        P_GET_STR(URL);
+        P_FINISH;
+        this->Play(URL);
+    }
+    DECLARE_FUNCTION(execStop)
+    {
+        P_FINISH;
+        this->Stop();
+    }
+    DECLARE_CLASS(AOLVideoPlayer,AActor,0,OLGame)
+    virtual void BeginDestroy();
+    virtual UBOOL Tick(FLOAT DeltaTime, ELevelTick TickType);
+};
+
 struct FVOLine
 {
     class UAkEvent* Line;
@@ -8468,6 +8712,15 @@ public:
 #endif // !INCLUDED_OLGAME_CLASSES
 #endif // !NAMES_ONLY
 
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execSetScreenMesh);
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execSendChar);
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execSendKey);
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execSendScroll);
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execSendRightClick);
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execSendClick);
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execNavigate);
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execClose);
+AUTOGENERATE_FUNCTION(AOLBrowser,-1,execOpen);
 AUTOGENERATE_FUNCTION(AOLCameraActor,-1,execNativeGetCameraView);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execSetShowEditorSprites);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execDingoTest);
@@ -8712,6 +8965,12 @@ AUTOGENERATE_FUNCTION(AOLHero,-1,execGetViewRotation);
 AUTOGENERATE_FUNCTION(AOLHero,-1,execGetPawnViewLocation);
 AUTOGENERATE_FUNCTION(AOLCollectiblePickup,-1,execShouldShowCollectible);
 AUTOGENERATE_FUNCTION(AOLGameplayItemPickup,-1,execShouldShowItem);
+AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeConnectLocal);
+AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeIsRelayRunning);
+AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeStopRelay);
+AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeStartRelay);
+AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeClearRelayRichPresence);
+AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeSetRelayRichPresence);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeOpenSteamFriendsOverlay);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeGetMySteamID);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeConnectP2P);
@@ -8728,10 +8987,12 @@ AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execCheatGiveAllCollectibles);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execShippingCheat_GiveAllCheckpoints);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execClearAllProgress);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execSaveBeforeQuitting);
+AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execStartNewGameAtCheckpoint);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeApplyCheckpointRecord);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execNativeCreateCheckpointRecord);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execSavePersistentState);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execStopAllSounds);
+AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execRayIntersectsOBB);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execObserverActivateCSA);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execForceActivateTouchEvent);
 AUTOGENERATE_FUNCTION(AOLPlayerController,-1,execSetPlayerFoundWhileHidden);
@@ -8770,6 +9031,8 @@ AUTOGENERATE_FUNCTION(UOLUtils,-1,execIsDLCInstalled);
 AUTOGENERATE_FUNCTION(UOLUtils,-1,execIsConsole);
 AUTOGENERATE_FUNCTION(UOLUtils,-1,execIsDingo);
 AUTOGENERATE_FUNCTION(UOLUtils,-1,execIsPS4);
+AUTOGENERATE_FUNCTION(AOLVideoPlayer,-1,execStop);
+AUTOGENERATE_FUNCTION(AOLVideoPlayer,-1,execPlay);
 AUTOGENERATE_FUNCTION(UOLWaitPointComponent,-1,execReturnWaitPoint);
 AUTOGENERATE_FUNCTION(UOLWaitPointComponent,-1,execGrabBestWaitPoint);
 AUTOGENERATE_FUNCTION(UOLWaitPointComponent,-1,execGetWaitPointForwardVector);
@@ -8788,6 +9051,8 @@ AUTOGENERATE_FUNCTION(UOLWaitPointComponent,-1,execGetWaitPointForwardVector);
 	AOLAmbientSound::StaticClass(); \
 	AOLAmbientSoundClone::StaticClass(); \
 	AOLBashableObject::StaticClass(); \
+	AOLBrowser::StaticClass(); \
+	GNativeLookupFuncs.Set(FName("OLBrowser"), GOLGameAOLBrowserNatives); \
 	UOLCamcorderHud::StaticClass(); \
 	AOLCameraActor::StaticClass(); \
 	GNativeLookupFuncs.Set(FName("OLCameraActor"), GOLGameAOLCameraActorNatives); \
@@ -8853,6 +9118,7 @@ AUTOGENERATE_FUNCTION(UOLWaitPointComponent,-1,execGetWaitPointForwardVector);
 	UOLInventoryManager::StaticClass(); \
 	GNativeLookupFuncs.Set(FName("OLInventoryManager"), GOLGameUOLInventoryManagerNatives); \
 	UOLMainHud::StaticClass(); \
+	UOLNetworkConfig::StaticClass(); \
 	AOLPawn::StaticClass(); \
 	GNativeLookupFuncs.Set(FName("OLPawn"), GOLGameAOLPawnNatives); \
 	AOLHero::StaticClass(); \
@@ -8889,6 +9155,8 @@ AUTOGENERATE_FUNCTION(UOLWaitPointComponent,-1,execGetWaitPointForwardVector);
 	UOLUberPostProcessEffect::StaticClass(); \
 	UOLUtils::StaticClass(); \
 	GNativeLookupFuncs.Set(FName("OLUtils"), GOLGameUOLUtilsNatives); \
+	AOLVideoPlayer::StaticClass(); \
+	GNativeLookupFuncs.Set(FName("OLVideoPlayer"), GOLGameAOLVideoPlayerNatives); \
 	UOLVoiceManager::StaticClass(); \
 	UOLWaitPointComponent::StaticClass(); \
 	GNativeLookupFuncs.Set(FName("OLWaitPointComponent"), GOLGameUOLWaitPointComponentNatives); \
@@ -8896,6 +9164,20 @@ AUTOGENERATE_FUNCTION(UOLWaitPointComponent,-1,execGetWaitPointForwardVector);
 #endif // OLGAME_NATIVE_DEFS
 
 #ifdef NATIVES_ONLY
+FNativeFunctionLookup GOLGameAOLBrowserNatives[] = 
+{ 
+	MAP_NATIVE(AOLBrowser, execSetScreenMesh)
+	MAP_NATIVE(AOLBrowser, execSendChar)
+	MAP_NATIVE(AOLBrowser, execSendKey)
+	MAP_NATIVE(AOLBrowser, execSendScroll)
+	MAP_NATIVE(AOLBrowser, execSendRightClick)
+	MAP_NATIVE(AOLBrowser, execSendClick)
+	MAP_NATIVE(AOLBrowser, execNavigate)
+	MAP_NATIVE(AOLBrowser, execClose)
+	MAP_NATIVE(AOLBrowser, execOpen)
+	{NULL, NULL}
+};
+
 FNativeFunctionLookup GOLGameAOLCameraActorNatives[] = 
 { 
 	MAP_NATIVE(AOLCameraActor, execNativeGetCameraView)
@@ -9232,6 +9514,12 @@ FNativeFunctionLookup GOLGameAOLGameplayItemPickupNatives[] =
 
 FNativeFunctionLookup GOLGameAOLPlayerControllerNatives[] = 
 { 
+	MAP_NATIVE(AOLPlayerController, execNativeConnectLocal)
+	MAP_NATIVE(AOLPlayerController, execNativeIsRelayRunning)
+	MAP_NATIVE(AOLPlayerController, execNativeStopRelay)
+	MAP_NATIVE(AOLPlayerController, execNativeStartRelay)
+	MAP_NATIVE(AOLPlayerController, execNativeClearRelayRichPresence)
+	MAP_NATIVE(AOLPlayerController, execNativeSetRelayRichPresence)
 	MAP_NATIVE(AOLPlayerController, execNativeOpenSteamFriendsOverlay)
 	MAP_NATIVE(AOLPlayerController, execNativeGetMySteamID)
 	MAP_NATIVE(AOLPlayerController, execNativeConnectP2P)
@@ -9248,10 +9536,12 @@ FNativeFunctionLookup GOLGameAOLPlayerControllerNatives[] =
 	MAP_NATIVE(AOLPlayerController, execShippingCheat_GiveAllCheckpoints)
 	MAP_NATIVE(AOLPlayerController, execClearAllProgress)
 	MAP_NATIVE(AOLPlayerController, execSaveBeforeQuitting)
+	MAP_NATIVE(AOLPlayerController, execStartNewGameAtCheckpoint)
 	MAP_NATIVE(AOLPlayerController, execNativeApplyCheckpointRecord)
 	MAP_NATIVE(AOLPlayerController, execNativeCreateCheckpointRecord)
 	MAP_NATIVE(AOLPlayerController, execSavePersistentState)
 	MAP_NATIVE(AOLPlayerController, execStopAllSounds)
+	MAP_NATIVE(AOLPlayerController, execRayIntersectsOBB)
 	MAP_NATIVE(AOLPlayerController, execObserverActivateCSA)
 	MAP_NATIVE(AOLPlayerController, execForceActivateTouchEvent)
 	MAP_NATIVE(AOLPlayerController, execSetPlayerFoundWhileHidden)
@@ -9328,6 +9618,13 @@ FNativeFunctionLookup GOLGameUOLUtilsNatives[] =
 	{NULL, NULL}
 };
 
+FNativeFunctionLookup GOLGameAOLVideoPlayerNatives[] = 
+{ 
+	MAP_NATIVE(AOLVideoPlayer, execStop)
+	MAP_NATIVE(AOLVideoPlayer, execPlay)
+	{NULL, NULL}
+};
+
 FNativeFunctionLookup GOLGameUOLWaitPointComponentNatives[] = 
 { 
 	MAP_NATIVE(UOLWaitPointComponent, execReturnWaitPoint)
@@ -9352,6 +9649,9 @@ VERIFY_CLASS_SIZE_NODIE(AOLAmbientSoundClone)
 VERIFY_CLASS_OFFSET_NODIE(AOLBashableObject,OLBashableObject,BashableType)
 VERIFY_CLASS_OFFSET_NODIE(AOLBashableObject,OLBashableObject,Edge1Dest)
 VERIFY_CLASS_SIZE_NODIE(AOLBashableObject)
+VERIFY_CLASS_OFFSET_NODIE(AOLBrowser,OLBrowser,BrowserTexture)
+VERIFY_CLASS_OFFSET_NODIE(AOLBrowser,OLBrowser,NativeHandle)
+VERIFY_CLASS_SIZE_NODIE(AOLBrowser)
 VERIFY_CLASS_OFFSET_NODIE(UOLCamcorderHud,OLCamcorderHud,HUD)
 VERIFY_CLASS_OFFSET_NODIE(UOLCamcorderHud,OLCamcorderHud,HudState)
 VERIFY_CLASS_SIZE_NODIE(UOLCamcorderHud)
@@ -9464,6 +9764,9 @@ VERIFY_CLASS_SIZE_NODIE(UOLInventoryManager)
 VERIFY_CLASS_OFFSET_NODIE(UOLMainHud,OLMainHud,HUD)
 VERIFY_CLASS_OFFSET_NODIE(UOLMainHud,OLMainHud,HudState)
 VERIFY_CLASS_SIZE_NODIE(UOLMainHud)
+VERIFY_CLASS_OFFSET_NODIE(UOLNetworkConfig,OLNetworkConfig,IP)
+VERIFY_CLASS_OFFSET_NODIE(UOLNetworkConfig,OLNetworkConfig,HostSteamID)
+VERIFY_CLASS_SIZE_NODIE(UOLNetworkConfig)
 VERIFY_CLASS_OFFSET_NODIE(AOLPawn,OLPawn,DefaultPawn)
 VERIFY_CLASS_OFFSET_NODIE(AOLPawn,OLPawn,PendingAnimSetUpdateTime)
 VERIFY_CLASS_SIZE_NODIE(AOLPawn)
@@ -9484,7 +9787,7 @@ VERIFY_CLASS_OFFSET_NODIE(AOLGameplayItemPickup,OLGameplayItemPickup,ItemName)
 VERIFY_CLASS_OFFSET_NODIE(AOLGameplayItemPickup,OLGameplayItemPickup,PickupSound)
 VERIFY_CLASS_SIZE_NODIE(AOLGameplayItemPickup)
 VERIFY_CLASS_OFFSET_NODIE(AOLPlayerController,OLPlayerController,HeroPawn)
-VERIFY_CLASS_OFFSET_NODIE(AOLPlayerController,OLPlayerController,SlowDownFactor)
+VERIFY_CLASS_OFFSET_NODIE(AOLPlayerController,OLPlayerController,PlacementYaw)
 VERIFY_CLASS_SIZE_NODIE(AOLPlayerController)
 VERIFY_CLASS_OFFSET_NODIE(UOLPlayerInput,OLPlayerInput,GPBindingsA)
 VERIFY_CLASS_OFFSET_NODIE(UOLPlayerInput,OLPlayerInput,GamepadConfig)
@@ -9526,6 +9829,9 @@ VERIFY_CLASS_OFFSET_NODIE(UOLUberPostProcessEffect,OLUberPostProcessEffect,Vigne
 VERIFY_CLASS_OFFSET_NODIE(UOLUberPostProcessEffect,OLUberPostProcessEffect,MovieLightMaskTexture)
 VERIFY_CLASS_SIZE_NODIE(UOLUberPostProcessEffect)
 VERIFY_CLASS_SIZE_NODIE(UOLUtils)
+VERIFY_CLASS_OFFSET_NODIE(AOLVideoPlayer,OLVideoPlayer,VideoTexture)
+VERIFY_CLASS_OFFSET_NODIE(AOLVideoPlayer,OLVideoPlayer,NativeHandle)
+VERIFY_CLASS_SIZE_NODIE(AOLVideoPlayer)
 VERIFY_CLASS_OFFSET_NODIE(UOLVoiceManager,OLVoiceManager,VOPackages)
 VERIFY_CLASS_OFFSET_NODIE(UOLVoiceManager,OLVoiceManager,CriticalSection)
 VERIFY_CLASS_SIZE_NODIE(UOLVoiceManager)

@@ -1,59 +1,29 @@
 #pragma once
+#include "PacketChannels.h"
 
 // ============================================================================
-// HELLO binary packet — sent after READY to register nick with the server.
-//
-// Layout:
-//   [0] BYTE NickLen     — length of nick string (1-32)
-//   [1..N] ASCII nick bytes — no null terminator
+// CH_HERO (0x01) packet structs
+// Packet header: [CH_HERO][HERO_*][payload]
 // ============================================================================
 
-#define MPKT_HELLO 0x02
-
-// ============================================================================
-// HeadRot binary packet
-// ============================================================================
-
+// HERO_HEAD_ROT payload
 #pragma pack(push, 1)
 struct FHeadRotPacket
 {
-    INT     CamPitch;   // raw rotator units
-    INT     CamYaw;     // raw rotator units
+    INT  CamPitch;   // raw rotator units
+    INT  CamYaw;     // raw rotator units
 };
 #pragma pack(pop)
 
-#define MPKT_HEAD_ROT 0x04
-
-// ============================================================================
-// MeshPreset binary packet — 1 byte preset index
-// ============================================================================
-
+// HERO_MESH_PRESET payload
 #pragma pack(push, 1)
 struct FMeshPresetPacket
 {
-    BYTE    PresetIndex;
+    BYTE PresetIndex;
 };
 #pragma pack(pop)
 
-#define MPKT_MESH_PRESET 0x05
-
-// ============================================================================
-// CinematicAnim binary packet  (MPKT_CINEMATIC_ANIM 0x06)
-//
-// Layout:
-//   [0] BYTE  bStop        — 1 = stop, 0 = play
-//   [1] BYTE  AnimPathLen  — only present when bStop == 0
-//   [2..N] ASCII path bytes — "Package.Name|AnimSeqName", no null terminator
-// ============================================================================
-
-#define MPKT_CINEMATIC_ANIM 0x06
-
-// ============================================================================
-// SmtType binary packet — unified SMT transition packet.
-// Contains all pre-params (formerly in FSmtTypePacket) and all position/anim
-// params (formerly in the removed FSmtPosPacket). One packet per transition.
-// ============================================================================
-
+// HERO_SMT_TYPE payload
 #pragma pack(push, 1)
 struct FSmtTypePacket
 {
@@ -124,8 +94,7 @@ struct FSmtTypePacket
     BYTE    CSAPathLen;
     BYTE    CSAPath[127];
 
-    // Struggle params (SMT_EnterStruggle): entry + cycle anim names for player,
-    // plus AnimSet path to load (mirrors Cinematic "Package.Name|AnimSeqName" approach).
+    // Struggle params (SMT_EnterStruggle)
     BYTE    StruggleEntryAnimPlayerLen;
     BYTE    StruggleEntryAnimPlayer[63];
     BYTE    StruggleCycleAnimPlayerLen;
@@ -139,18 +108,7 @@ struct FSmtTypePacket
 };
 #pragma pack(pop)
 
-#define MPKT_SMT_TYPE 0x07
-
-// PING/PONG: [type(1)][player_id(4)][sent_ms LE u32(4)] — not relayed, server echoes back
-#define MPKT_PING 0x08
-
-// ============================================================================
-// PlayerEvent binary packet (MPKT_PLAYER_EVENT 0x0A)
-//
-// One unified packet for HIT / GRAB / THROW / KILL.
-// Layout: [0x0A][FPlayerEventPacket]
-// ============================================================================
-
+// HERO_PLAYER_EVENT payload
 enum EPlayerEventType
 {
     PEVT_Hit   = 0,
@@ -166,35 +124,27 @@ struct FPlayerEventPacket
     BYTE  EventType;        // EPlayerEventType
 
     // HIT
-    INT   DamageX1;         // int(Damage)
-    INT   KnockbackX1;      // int(KnockbackPower)
-    INT   HitDirX1000[3];   // HitDir * 1000
+    INT   DamageX1;
+    INT   KnockbackX1;
+    INT   HitDirX1000[3];
 
     // GRAB / KILL
-    INT   LocX10[3];        // GrabTargetLoc/AnimStart * 10
-    INT   DirX10000[3];     // CharDir * 10000
-    INT   BlendAlphaX10000; // BlendAlpha * 10000
+    INT   LocX10[3];
+    INT   DirX10000[3];
+    INT   BlendAlphaX10000;
     INT   EnemyTypeInt;
-    INT   WeaponType;       // KILL only
-    INT   KillType;         // KILL only
-    INT   VictimYaw;        // KILL only
-    INT   ThrowRotX100000;  // THROW only: ThrowRotation * 100000
-    INT   GrabType;         // GRAB only
-    BYTE  bCrouched;        // GRAB only
-    BYTE  bBackAnim;        // KILL only
-    BYTE  bLeftAnim;        // GRAB / KILL
+    INT   WeaponType;
+    INT   KillType;
+    INT   VictimYaw;
+    INT   ThrowRotX100000;
+    INT   GrabType;
+    BYTE  bCrouched;
+    BYTE  bBackAnim;
+    BYTE  bLeftAnim;
     BYTE  _pad;
 };
 #pragma pack(pop)
 
-#define MPKT_PLAYER_EVENT 0x0A
-
-// ============================================================================
-// PlayerLifecycle binary packet (MPKT_PLAYER_LIFECYCLE 0x0B)
-//
-// One byte: 0 = Died, 1 = Respawned.
-// ============================================================================
-
-#define MPKT_PLAYER_LIFECYCLE     0x0B
-#define MPKT_LIFECYCLE_DIED       0
-#define MPKT_LIFECYCLE_RESPAWNED  1
+// HERO_PLAYER_LIFECYCLE sub-events
+#define LIFECYCLE_DIED       0
+#define LIFECYCLE_RESPAWNED  1

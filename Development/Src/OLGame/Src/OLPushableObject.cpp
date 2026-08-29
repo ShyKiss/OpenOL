@@ -41,6 +41,17 @@ UBOOL AOLPushableObject::Tick(FLOAT deltaTime, ELevelTick tickType)
 		return Super::Tick(deltaTime, tickType);
 	}
 
+	// Fallback: stop net-locked sound if no push packet received for > 0.5s
+	// (handles case where all bPushing=0 redundant packets were lost)
+	if (bNetLocked && GWorld && (GWorld->GetTimeSeconds() - NetPushLastTime) > 0.5f)
+	{
+		bNetLocked    = FALSE;
+		RemotePushSeq = 0;
+		NetStopPushing();
+		PostAkEvent(SndStopPushing);
+		StopMoving();
+	}
+
 	FLOAT targetVel = bPushActive ? (bPushFwd ? MaxSpeed : -MaxSpeed) : 0.0f;
 	CurrentVelocity = Utils::Approach(CurrentVelocity, targetVel, Abs(targetVel) > Abs(CurrentVelocity) ? AccelApproachCoeff : DecelApproachCoeff, deltaTime);
 
@@ -71,9 +82,16 @@ UBOOL AOLPushableObject::Tick(FLOAT deltaTime, ELevelTick tickType)
 void AOLPushableObject::Reset()
 {
 	// Careful - Called from editor as well as game
-	bPlayerLocked = FALSE;	
-	bPushActive = FALSE;
+	bPlayerLocked = FALSE;
+	bPushActive   = FALSE;
 	CurrentVelocity = 0.0f;
+	if (bNetLocked)
+	{
+		bNetLocked    = FALSE;
+		RemotePushSeq = 0;
+		NetStopPushing();
+		PostAkEvent(SndStopPushing);
+	}
 
 	if (GWorld && GWorld->HasBegunPlay())
 	{

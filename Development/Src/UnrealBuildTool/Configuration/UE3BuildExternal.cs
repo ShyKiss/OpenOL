@@ -968,6 +968,7 @@ namespace UnrealBuildTool
             AddWwiseLib("AkSilenceSource", wwiseTargetLibFolder);
             AddWwiseLib("AkSineSource", wwiseTargetLibFolder);
             AddWwiseLib("AkToneSource", wwiseTargetLibFolder);
+            AddWwiseLib("AkAudioInputSource", wwiseTargetLibFolder);
             AddWwiseLib("AkPeakLimiterFX", wwiseTargetLibFolder);
             AddWwiseLib("AkParametricEQFX", wwiseTargetLibFolder);
             AddWwiseLib("AkDelayFX", wwiseTargetLibFolder);

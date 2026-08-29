@@ -4932,7 +4932,8 @@ static void RenderViewFamily_RenderThread( FSceneRenderer* SceneRenderer )
 void BeginRenderingViewFamily(FCanvas* Canvas,const FSceneViewFamily* ViewFamily)
 {
 	// Enforce the editor only show flags restrictions.
-	check(GIsEditor || !(ViewFamily->ShowFlags & SHOW_EditorOnly_Mask));
+	// Note: disabled for OpenOL asset preview which runs editor-style rendering in game.
+	// check(GIsEditor || !(ViewFamily->ShowFlags & SHOW_EditorOnly_Mask));
 
 	// Flush the canvas first.
 	Canvas->Flush();

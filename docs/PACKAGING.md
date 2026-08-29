@@ -1,35 +1,62 @@
 # Packaging
 
-If you wish to ship a release zip like we do that users can just drag and drop to their game files, just run [publish.sh](../Development/Src/Targets/publish.sh) which should give you a ready-to-ship `OpenOL.7z` file in that's located in `$OUTLASTSRC/PublishTemp` . Users might need to start their game with `-log -nosteam -seekfreeloadingpcconsole` after installing `OpenOL.7z` .
+<p align="right"><a href="./PACKAGING_RU.md">🇷🇺 Русский</a></p>
 
-Here's a file tree of a 7z file we ship for reference;
+To ship a release archive that users can drag-and-drop into their game folder, run [publish_production.sh](../Development/Src/Targets/publish_production.sh):
 
 ```sh
-┌─── Binaries/
-│    └─── Win64/
-│         └─── OLGame.exe
-├─── OutlastLauncher.exe
-└─── OLGame/
-     ├─── Config/
-     │    ├── DefaultEngine.ini
-     │    ├── DefaultGame.ini
-     │    ├── DefaultMultiplayer.ini
-     │    └── DefaultUI.ini
-     ├─── CookedPCConsole/
-     │    ├── Core.upk
-     │    ├── Engine.upk
-     │    ├── GameFramework.upk
-     │    ├── IpDrv.upk
-     │    ├── OLFrontEnd.upk
-     │    ├── OnlineSubsystemPC.upk
-     │    ├── OnlineSubsystemSteamworks.upk
-     │    ├── OpenOL/
-     │    │    ├── Multiplayer.u
-     │    │    └── OLGame.u
-     │    └── menuassets.upk
-     └─── Localization/
-          ├── INT/
-          │    └── OLGame.int
-          └── RUS/
-               └── olgame.RUS
+cd $OUTLASTSRC
+./Development/Src/Targets/publish_production.sh
+```
+
+This produces `$OUTLASTSRC/PublishTemp/OpenOL.7z` (and `.zip`).
+
+> Users may need to launch the game with `-log -nosteam -seekfreeloadingpcconsole` after installing.
+
+---
+
+## Release archive layout
+
+```
+├── OutlastLauncher.exe
+├── Binaries/
+│   └── Win64/
+│       ├── OLGame.exe
+│       └── OpenOL/
+│           ├── locales/
+│           │   ├── en.ini
+│           │   └── ru.ini
+│           └── res/
+│               └── checkpoints/
+├── OLGame/
+│   ├── Config/
+│   │   ├── DefaultEngine.ini
+│   │   ├── DefaultGame.ini
+│   │   ├── DefaultMultiplayer.ini
+│   │   └── DefaultUI.ini
+│   ├── CookedPCConsole/
+│   │   ├── menuassets.upk
+│   │   ├── OLFrontEnd.upk
+│   │   └── OpenOL/
+│   │       ├── AkAudio.u
+│   │       ├── Core.u
+│   │       ├── Engine.u
+│   │       ├── GameFramework.u
+│   │       ├── GFxUI.u
+│   │       ├── IpDrv.u
+│   │       ├── Multiplayer.u
+│   │       ├── OLGame.u
+│   │       ├── OnlineSubsystemPC.u
+│   │       ├── OnlineSubsystemSteamworks.u
+│   │       └── WinDrv.u
+│   └── Localization/
+│       ├── DEU/olgame.DEU
+│       ├── ESN/olgame.ESN
+│       ├── FRA/olgame.FRA
+│       ├── INT/OLGame.int
+│       ├── ITA/olgame.ITA
+│       ├── JPN/OLGame.JPN
+│       ├── POL/olgame.POL
+│       ├── PTB/OLGame.ptb
+│       └── RUS/olgame.RUS
 ```

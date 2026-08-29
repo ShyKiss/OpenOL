@@ -25,7 +25,11 @@ var() StaticMeshComponent Mesh;
 var() DynamicLightEnvironmentComponent LightEnvironment;
 
 var transient bool bPlayerLocked;
-var transient bool bNetLocked; // remote player is currently pushing this object
+var transient bool  bNetLocked;        // remote player is currently pushing this object
+var transient float NetPushLastTime;   // WorldInfo.TimeSeconds of last received push packet
+var transient int   LocalPushSeq;      // monotonic sequence counter for packets we send
+var transient int   RemotePushSeq;     // last received Seq (drop older packets)
+var transient int   PushStopRepeat;    // remaining bPushing=0 packets to send on release
 var transient bool bPushActive; // is there currently a push force moving this object
 var transient bool bPushFwd; // when bPushActive, is the push forward or backward
 var transient float CurrentDisplacement; // displacement, from base back edge towards fwd edge (can be negative)

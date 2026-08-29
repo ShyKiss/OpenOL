@@ -60,6 +60,7 @@
     <ClCompile Include="src\imgui_widgets.cpp" />
     <ClCompile Include="src\imgui_impl_dx9.cpp" />
     <ClCompile Include="src\imgui_impl_win32.cpp" />
+    <ClCompile Include="src\stb_image.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

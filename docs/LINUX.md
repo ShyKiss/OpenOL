@@ -1,64 +1,98 @@
-# How to setup development environment on linux
+# Linux development environment setup
 
-# Disclaimer: Make sure the `$WINEPREFIX` you're using is as same as the one in [build_wine.sh](../Src/Targets/build_wine.sh)
+<p align="right"><a href="./LINUX_RU.md">🇷🇺 Русский</a></p>
 
-### 1.Install visual studio 2012
+See also: [Building the mod](./BUILD.md)
 
-Wine version confirmed to work: 11.14
+> Make sure the `$WINEPREFIX` you use matches the one configured in `build_wine.sh`.
 
-Install these winetricks packages
+---
+
+## 1. Install Visual Studio 2012 under Wine
+
+Wine version confirmed to work: **11.14**
+
+Install required winetricks packages:
 
 ```sh
 winetricks -q dotnet20 dotnet40 gdiplus corefonts riched20 atmlib msxml3 msls31
 ```
 
-Run `vs_professional.exe`
+Run the VS installer:
 
-Pick only;
-- Microsoft Foundation Classes for C++
+```sh
+wine vs_professional.exe
+```
 
-Run `sudo pkill -9 -f "\\.exe"` if visual studio asks for some sort of restart.
+Select only:
+- **Microsoft Foundation Classes for C++**
 
-### 2. Install DirectX SDK
-Run `DXSDK_Jun10.exe`
+If Visual Studio asks to restart, kill the processes instead:
 
-### 3. Building
-Cd into `$OUTLASTSRC/Development/Src/Targets` and run `build_wine.sh`
+```sh
+sudo pkill -9 -f "\.exe"
+```
 
-# Troubleshooting
-Shader error;
+---
+
+## 2. Install DirectX SDK (June 2010)
+
+```sh
+wine DXSDK_Jun10.exe
+```
+
+---
+
+## 3. Building
+
+```sh
+cd $OUTLASTSRC/Development/Src/Targets
+./build_wine.sh
+```
+
+See [BUILD.md](./BUILD.md) for the full list of build steps.
+
+---
+
+## 4. Editor
+
+```sh
+wine OLGame.exe editor -NoGADWarning
+
+# Force WineD3D (software renderer):
+WINEDLLOVERRIDES="d3d8=b;d3d9=b;d3d10core=b;d3d11=b;dxgi=b" wine OLGame.exe editor -NoGADWarning
+```
+
+---
+
+## Troubleshooting
+
+### Shader compiler error
 
 ```log
 Warning, 0 Shader compiler errors compiling global for platform pc-d3d-sm3:
 Critical: appError called: Failed to compile global shader TFilterPixelShader<16>
-Failed to compile global shader TFilterPixelShader<16>
 ```
 
-Solution:
-
+Fix:
+```sh
 winetricks -q d3dcompiler_43
+```
 
-Use this command for it instead of the script "wine ../../../Binaries/Win64/OLGame.exe CookPackages -platform=PCConsole -multilanguagecook=INT -VERBOSE"
+If that doesn't help, try cooking manually:
+```sh
+wine ../../../Binaries/Win64/OLGame.exe CookPackages -platform=PCConsole -multilanguagecook=INT -VERBOSE
+```
 
-Maybe Set "Engine/Config/BaseEngine.ini" bAllowMultiThreadedShaderCompile=False
+Also try:
+- Set `bAllowMultiThreadedShaderCompile=False` in `Engine/Config/BaseEngine.ini`
+- Delete `OLGame/Content/GlobalShaderCache-PC-D3D-SM3.bin`
 
-Maybe Delete OLGame/Content/GlobalShaderCache-PC-D3D-SM3.bin
+### Fatal error on launch
 
-Fatal error of some sort;
 ```log
-OLGame - Release
-Analyzing...
-
 Fatal error!
 Address = 0xfa041470 (filename not found)
 ```
 
-Solution:
-Compile everything from scratch like in [BUILD.md](./BUILD.md)
-
-# Setting up the editor
-
-```sh
-wine OLGame.exe editor -NoGADWarning
-WINEDLLOVERRIDES="d3d8=b;d3d9=b;d3d10core=b;d3d11=b;dxgi=b" wine OLGame.exe editor -NoGADWarning # To force WineD3D
-```
+Rebuild everything from scratch following the order in [BUILD.md](./BUILD.md).

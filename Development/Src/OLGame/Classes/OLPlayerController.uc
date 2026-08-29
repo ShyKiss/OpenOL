@@ -376,6 +376,7 @@ var bool		bBehindView;
 var bool		bDebugFixedCam;
 var bool		bDebugFreeCam;
 var bool		bDebugGhost;
+var bool		bBunnyHop;
 var rotator	DebugCamRot;
 var vector	DebugCamPos;
 var float	DebugFreeCamSpeed;
@@ -395,6 +396,12 @@ var bool		bSlowDownFPS;
 var float	SlowDownFactor;
 // Set by MultiplayerController while applying a remote door event — suppresses OLSeqAct_Door actions.
 var bool bApplyingRemoteDoorEvent;
+
+// Placement mode — ghost-based object placement editor.
+var bool   bPlacementMode;
+var bool   bPlacementConfirmPending;  // set by C++ InputKey on LMB; consumed by caller each tick
+var Actor  PlacementGhost;
+var float  PlacementYaw;    // current yaw offset, rotated by mouse wheel
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////
@@ -463,6 +470,7 @@ private:
 	void UpdateStruggle(FLOAT deltaSeconds);
 	void UpdateOrbisController(FLOAT deltaSeconds);
 	void UpdateTouchZoom(FLOAT deltaSeconds);
+	void TickPlacementMode();
 
 	void ProcessCompletedRecording(AOLRecordingMarker* recordingMarker);
 
@@ -525,6 +533,31 @@ function Reset()
 		PlayerCamera.Destroy();
 	}
 	TutorialManager.Clear();
+}
+
+// ---------------------------------------------------------------------------
+// Placement mode
+// ---------------------------------------------------------------------------
+
+event BeginPlacementMode(Actor Ghost)
+{
+	EndPlacementMode();
+
+	PlacementGhost            = Ghost;
+	PlacementYaw              = Rotation.Yaw;
+	bPlacementConfirmPending  = false;
+	bPlacementMode            = true;
+}
+
+event EndPlacementMode()
+{
+	if (PlacementGhost != None)
+	{
+		PlacementGhost.Destroy();
+		PlacementGhost = None;
+	}
+	bPlacementConfirmPending = false;
+	bPlacementMode           = false;
 }
 
 reliable client function ClientRestart(Pawn NewPawn)
@@ -801,6 +834,9 @@ event float GetFOVAngle()
 {
 	local CameraActor camActor;
 
+	if (bDebugFreeCam || bDebugFixedCam)
+		return DebugFreeCamFOV;
+
 	camActor = CameraActor(ViewTarget);
 	if (camActor != None )
 	{
@@ -991,6 +1027,11 @@ function string GetObjectFullPath(Object Obj)
 	return Path;
 }
 
+// Ray vs OBB intersection using the component's LocalToWorld matrix.
+// Transforms the ray into local mesh space and does a slab test against
+// the static mesh's local-space box extents (unaffected by rotation/scale).
+native function bool RayIntersectsOBB(vector RayOrigin, vector RayDir, StaticMeshComponent SMC, out vector HitPos);
+
 // Draw name labels at the screen-projected location of all Triggers and TriggerVolumes.
 function DrawInspectorTriggerLabels(HUD H)
 {
@@ -1028,10 +1069,10 @@ function DrawFreeCamInspector(HUD H)
 	local SkeletalMeshComponent SKMC, HitSKMC;
 	local MaterialInterface Mat;
 	local MaterialInstanceConstant MIC;
-	local int MatIdx, TexIdx, i, SelIdx;
+	local int MatIdx, TexIdx, i, j, SelIdx;
 	local Box ActorBox;
 	local vector BoxCenter, BoxExtent, TriggerHitLoc, TriggerHitNorm;
-	local float X, Y, LineH, Dist;
+	local float X, Y, LineH;
 	local Canvas C;
 	local string Line;
 	local InspectorHit Entry;
@@ -1056,6 +1097,20 @@ function DrawFreeCamInspector(HUD H)
 				Entry.HitLoc   = HitLoc;
 				Entry.Dist     = VSize(HitLoc - DebugCamPos);
 				InspectorHits.AddItem(Entry);
+			}
+			// Fallback for components without collision (e.g. StaticMeshCollectionActor):
+			// test ray against the component's OBB using LocalToWorld axes.
+			else if (!SMC.BlockActors && !SMC.CollideActors)
+			{
+				if (RayIntersectsOBB(DebugCamPos, vector(DebugCamRot), SMC, HitLoc))
+				{
+					Entry.HitActor = A;
+					Entry.HitSMC   = SMC;
+					Entry.HitSKMC  = None;
+					Entry.HitLoc   = HitLoc;
+					Entry.Dist     = VSize(HitLoc - DebugCamPos);
+					InspectorHits.AddItem(Entry);
+				}
 			}
 		}
 		foreach A.ComponentList(class'SkeletalMeshComponent', SKMC)
@@ -1086,14 +1141,17 @@ function DrawFreeCamInspector(HUD H)
 		InspectorHits.AddItem(Entry);
 	}
 
-	// Sort by distance (bubble sort — list is small).
+	// Sort by distance ascending (bubble sort — list is small).
 	for (i = 0; i < InspectorHits.Length - 1; i++)
 	{
-		if (InspectorHits[i].Dist > InspectorHits[i + 1].Dist)
+		for (j = 0; j < InspectorHits.Length - 1 - i; j++)
 		{
-			Entry              = InspectorHits[i];
-			InspectorHits[i]   = InspectorHits[i + 1];
-			InspectorHits[i+1] = Entry;
+			if (InspectorHits[j].Dist > InspectorHits[j + 1].Dist)
+			{
+				Entry                = InspectorHits[j];
+				InspectorHits[j]     = InspectorHits[j + 1];
+				InspectorHits[j + 1] = Entry;
+			}
 		}
 	}
 
@@ -1430,63 +1488,7 @@ function ApplyDeprecatedCheckpointRecord(const out DeprecatedCheckpointRecord Ol
 	ApplyCheckpointRecord(NewRecord);	
 }
 
-event StartNewGameAtCheckpoint(string CheckpointStr, bool bSaveToDisk)
-{
-	local OLCheckpoint CheckCP;
-	local OLCheckpoint StartCP;
-	local OLHero Hero;
-	local OLGame CurrentGame;
-	local OLEngine Engine;
-
-	// just to check that it exists
-	foreach AllActors(class'OLCheckpoint', CheckCP)
-	{
-		if (Caps(CheckCP.CheckpointName) == Caps(CheckpointStr))
-		{
-			StartCP = CheckCP;
-			break;
-		}
-	}
-
-	if (StartCP != None)
-	{
-		if (HUD.IsMainMenuOpen())
-		{
-			StopAllSounds();
-		}
-
-		HUD.HideMenu();
-
-		if (bDebugGhost)
-		{
-			OLCheatManager(CheatManager).Ghost();
-		}
-
-		Hero = HeroPawn;
-		UnPossess();
-
-		if (Hero != None)
-		{
-			Hero.Destroy();
-		}
-
-		ClearAllProgress();
-
-		Engine = OLEngine(class'Engine'.static.GetEngine());
-		CurrentGame = OLGame(WorldInfo.Game);
-
-		if (CurrentGame != None)
-		{	
-			if (Engine != None && !class'OLUtils'.static.IsConsole()) // already saved on consoles
-			{		
-				Engine.SaveCheckpoint(StartCP.CheckpointName, bSaveToDisk);
-			}
-
-			CurrentGame.CurrentCheckpointName = StartCP.CheckpointName;
-			CurrentGame.RestartPlayer(self);
-		}
-	}
-}
+native event StartNewGameAtCheckpoint(string CheckpointStr, bool bSaveToDisk);
 
 reliable client event ClientCommitMapChange()
 {
@@ -1862,10 +1864,10 @@ function NotifyRecordingCompleted(OLRecordingMarker Marker) {}
 // Called on remote peer: marks marker recorded and shows HUD note + sound.
 native function NativeApplyRemoteRecording(OLRecordingMarker Marker);
 
-function SaveNetworkSettings(string NewIP, string NewPort, string NewUsername, bool bSyncInteractable, bool bSyncEnemies, bool bSyncMatinees, bool bSyncPickups, string NewRoomCode, string NewPassword)
+function SaveNetworkSettings(string NewIP, string NewPort, string NewUsername, bool bSyncInteractable, bool bSyncEnemies, bool bSyncMatinees, bool bSyncPickups, bool bSpeedrunMode, string NewRoomCode, string NewPassword)
 {
     class'OLNetworkConfig'.static.Save(NewIP, NewPort, NewUsername,
-        bSyncInteractable, bSyncEnemies, bSyncMatinees, bSyncPickups,
+        bSyncInteractable, bSyncEnemies, bSyncMatinees, bSyncPickups, bSpeedrunMode,
         NewRoomCode, NewPassword);
 }
 
@@ -1881,6 +1883,7 @@ function bool   GetNetSyncInteractable() { return class'OLNetworkConfig'.default
 function bool   GetNetSyncEnemies()      { return class'OLNetworkConfig'.default.SyncEnemies; }
 function bool   GetNetSyncMatinees()     { return class'OLNetworkConfig'.default.SyncMatinees; }
 function bool   GetNetSyncPickups()      { return class'OLNetworkConfig'.default.SyncPickups; }
+function bool   GetNetSpeedrunMode()     { return class'OLNetworkConfig'.default.SpeedrunMode; }
 
 // Builds openol://ip:port?room=CODE[&password=SECRET]
 native function string NativeBuildInviteLink(string IP, string Port, string Room, string Pass);
@@ -1892,6 +1895,18 @@ native function NativeConnectP2P(string HostSteamID, int RelayPort, string RoomC
 native function string NativeGetMySteamID();
 // Opens the Steam overlay to the friends list (so the user can invite via Steam UI).
 native function NativeOpenSteamFriendsOverlay();
+// Set Rich Presence so friends see "Join Game" button pointing to our relay room.
+native function NativeSetRelayRichPresence(string RoomCode);
+// Clear Rich Presence when relay stops.
+native function NativeClearRelayRichPresence();
+// Start the embedded relay server on the given port.
+native function NativeStartRelay(int Port);
+// Stop the embedded relay server.
+native function NativeStopRelay();
+// Returns true if the embedded relay is currently running.
+native function bool NativeIsRelayRunning();
+// Connect to a local relay server on 127.0.0.1 (used when hosting).
+native function NativeConnectLocal(int Port);
 
 event OnLevelBecameVisible(string PackageName) {}
 

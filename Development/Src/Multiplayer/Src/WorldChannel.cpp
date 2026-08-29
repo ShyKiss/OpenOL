@@ -2,6 +2,7 @@
 #include "HeroChannel.h"
 #include "PushableChannel.h"
 #include "WorldChannelPackets.h"
+#include "OLUtilities.h"
 
 // ============================================================================
 // Internal helpers
@@ -12,43 +13,44 @@ static FORCEINLINE UBOOL CanWorldSend()
     return GMpConn.bIsConnected && GMpConn.bIsHandshaked;
 }
 
-static void SendWorldString(BYTE PktType, const FString& Str)
+static void SendWorldString(BYTE Channel, BYTE PktType, const FString& Str)
 {
-    INT Len = Min(Str.Len(), 255);
-    BYTE B[2 + 255];
-    B[0] = PktType;
-    B[1] = (BYTE)Len;
-    for (INT i = 0; i < Len; i++)
-        B[2 + i] = (BYTE)((*Str)[i] & 0x7F);
-    GMpConn.SendBinary(B, 2 + Len);
+    // Encode as UTF-8; length byte is UTF-8 byte count (max 252 to stay under 255).
+    BYTE Utf8[252];
+    INT Utf8Len = TCHARToUTF8(Utf8, sizeof(Utf8), *Str);
+    BYTE B[3 + 252];
+    B[0] = Channel;
+    B[1] = PktType;
+    B[2] = (BYTE)Utf8Len;
+    for (INT i = 0; i < Utf8Len; i++)
+        B[3 + i] = Utf8[i];
+    GMpConn.SendBinary(B, 3 + Utf8Len);
 }
 
-static void SendWorldIntString(BYTE PktType, INT Value, const FString& Str)
+static void SendWorldIntString(BYTE Channel, BYTE PktType, INT Value, const FString& Str)
 {
-    INT Len = Min(Str.Len(), 255);
-    BYTE B[6 + 255];
-    B[0] = PktType;
-    B[1] = (BYTE)(Value & 0xFF);
-    B[2] = (BYTE)((Value >> 8) & 0xFF);
-    B[3] = (BYTE)((Value >> 16) & 0xFF);
-    B[4] = (BYTE)((Value >> 24) & 0xFF);
-    B[5] = (BYTE)Len;
-    for (INT i = 0; i < Len; i++)
-        B[6 + i] = (BYTE)((*Str)[i] & 0x7F);
-    GMpConn.SendBinary(B, 6 + Len);
+    BYTE Utf8[252];
+    INT Utf8Len = TCHARToUTF8(Utf8, sizeof(Utf8), *Str);
+    BYTE B[7 + 252];
+    B[0] = Channel;
+    B[1] = PktType;
+    B[2] = (BYTE)(Value & 0xFF);
+    B[3] = (BYTE)((Value >> 8) & 0xFF);
+    B[4] = (BYTE)((Value >> 16) & 0xFF);
+    B[5] = (BYTE)((Value >> 24) & 0xFF);
+    B[6] = (BYTE)Utf8Len;
+    for (INT i = 0; i < Utf8Len; i++)
+        B[7 + i] = Utf8[i];
+    GMpConn.SendBinary(B, 7 + Utf8Len);
 }
 
-// Decode [strLen(1)][ASCII] from Data+Offset into OutStr. Returns false on underflow.
+// Decode [utf8Len(1)][UTF-8 bytes] from Data+Offset into OutStr. Returns false on underflow.
 static UBOOL ReadWorldString(BYTE* Data, INT DataLen, INT Offset, FString& OutStr)
 {
     if (Offset >= DataLen) return FALSE;
     INT Len = Data[Offset++];
     if (Offset + Len > DataLen) return FALSE;
-    TCHAR Buf[256];
-    for (INT i = 0; i < Len; i++)
-        Buf[i] = (TCHAR)Data[Offset + i];
-    Buf[Len] = 0;
-    OutStr = FString(Buf);
+    UTF8ToFString(Data + Offset, Len, OutStr);
     return TRUE;
 }
 
@@ -178,7 +180,7 @@ void UWorldChannel::SendPickupKismet(AOLPickableObject* Pickup)
     if (!GMpConn.SyncPickups || !GMpConn.SyncMatinees) return;
     if (!Pickup) return;
 
-    SendWorldString( MPKT_WORLD_PICKUP_KISMET, Pickup->GetPathName());
+    SendWorldString(CH_WORLD, WORLD_PICKUP_KISMET, Pickup->GetPathName());
 }
 
 // ============================================================================
@@ -191,7 +193,7 @@ void UWorldChannel::SendItemConsume(FName ItemName)
     if (!CanWorldSend()) return;
     if (!GMpConn.SyncInteractable) return;
 
-    SendWorldString( MPKT_WORLD_ITEM_CONSUME, ItemName.ToString());
+    SendWorldString(CH_WORLD, WORLD_ITEM_CONSUME, ItemName.ToString());
 }
 
 // ============================================================================
@@ -206,10 +208,11 @@ void UWorldChannel::SendMatineeState()
     TArray<USequenceObject*> AllMatinees;
     GWorld->GetGameSequence()->FindSeqObjectsByClass(USeqAct_Interp::StaticClass(), AllMatinees, TRUE);
 
-    // Build packet: [0x27][count(1)] { [pathLen(1)][path ASCII][position f32][playRate f32] }
+    // Build packet: [CH_WORLD][WORLD_MATINEE_STATE][count(1)] { [pathLen(1)][path ASCII][position f32][playRate f32] }
     BYTE B[1280];
     INT  N = 0;
-    B[N++] = MPKT_WORLD_MATINEE_STATE;
+    B[N++] = CH_WORLD;
+    B[N++] = WORLD_MATINEE_STATE;
     INT CountOffset = N++;  // placeholder for count
     BYTE Count = 0;
 
@@ -247,7 +250,7 @@ void UWorldChannel::SendRecordingMarker(AOLRecordingMarker* Marker)
     if (!Marker || !CanWorldSend()) return;
     if (!GMpConn.SyncPickups) return;
 
-    SendWorldString( MPKT_WORLD_RECORDING, Marker->GetPathName());
+    SendWorldString(CH_WORLD, WORLD_RECORDING, Marker->GetPathName());
 }
 
 // ============================================================================
@@ -276,7 +279,7 @@ void UWorldChannel::OnPawnTouchedTrigger(AActor* TriggerActor)
         {
             FString EventPath = TouchEvent->GetPathName();
             //debugf(TEXT("[MP] Trigger: %s"), *Path);
-            SendWorldIntString(MPKT_WORLD_TRIGGER_ACT, TouchEvent->TriggerCount, EventPath);
+            SendWorldIntString(CH_WORLD, WORLD_TRIGGER_ACT, TouchEvent->TriggerCount, EventPath);
         }
     }
 }
@@ -343,7 +346,7 @@ void UWorldChannel::OnBinaryNick(INT SenderID, const FString& Nick)
         {
             FString OurNick = GMpConn.Username.Len() > 0
                 ? FString(GMpConn.Username) : FString(TEXT("Player"));
-            SendWorldString(MPKT_WORLD_NICK, OurNick);
+            SendWorldString(CH_HERO, HERO_NICK, OurNick);
         }
     }
     else
@@ -371,12 +374,7 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
     FString Str;
     switch (PktType)
     {
-    case MPKT_WORLD_NICK:
-        if (ReadWorldString(Data, DataLen, 0, Str))
-            OnBinaryNick(SenderID, Str);
-        break;
-
-    case MPKT_WORLD_TRIGGER_ACT:
+    case WORLD_TRIGGER_ACT:
         if (DataLen >= 5 && GMpConn.SyncMatinees)
         {
             INT Count = (INT)(Data[0] | (Data[1] << 8) | (Data[2] << 16) | (Data[3] << 24));
@@ -385,7 +383,7 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         }
         break;
 
-    case MPKT_WORLD_ITEM_CONSUME:
+    case WORLD_ITEM_CONSUME:
         if (ReadWorldString(Data, DataLen, 0, Str) && GMpConn.SyncInteractable)
         {
             AOLHero* Hero = Cast<AOLHero>(ControllerOwner->Pawn);
@@ -394,12 +392,12 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         }
         break;
 
-    case MPKT_WORLD_PICKUP_KISMET:
+    case WORLD_PICKUP_KISMET:
         if (ReadWorldString(Data, DataLen, 0, Str) && GMpConn.SyncPickups && GMpConn.SyncMatinees)
             TriggerRemotePickupKismetEvent(ControllerOwner, Str);
         break;
 
-    case MPKT_WORLD_RECORDING:
+    case WORLD_RECORDING:
         if (ReadWorldString(Data, DataLen, 0, Str))
         {
             AOLRecordingMarker* Marker = Cast<AOLRecordingMarker>(
@@ -412,7 +410,7 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         }
         break;
 
-    case MPKT_WORLD_PICKUP_START:
+    case WORLD_PICKUP_START:
         if (DataLen >= 12 && GMpConn.SyncPickups)
         {
             // Store pickup location on the remote player slot for ATTACH lookup
@@ -422,7 +420,7 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         }
         break;
 
-    case MPKT_WORLD_PICKUP_ATTACH:
+    case WORLD_PICKUP_ATTACH:
         if (DataLen >= 12 && GMpConn.SyncPickups)
         {
             INT Idx = ControllerOwner->FindRemoteIndex(SenderID);
@@ -439,7 +437,7 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         }
         break;
 
-    case MPKT_WORLD_MATINEE_STATE:
+    case WORLD_MATINEE_STATE:
         if (DataLen >= 1 && GMpConn.SyncMatinees && GWorld && GWorld->GetGameSequence())
         {
             INT o = 0;
@@ -481,7 +479,7 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         }
         break;
 
-    case MPKT_WORLD_PICKUP_STATE:
+    case WORLD_PICKUP_STATE:
         if (DataLen >= 12 && GMpConn.SyncPickups)
         {
             AOLPickableObject* Best = FindPickupNear(ReadPickupLoc(Data));

@@ -6,7 +6,8 @@
 #include "OLUtilities.h"
 #include "OLDingo.h"
 
-// Runtime tuning vectors from ImGui (defined in D3D9Drv/OLImGui.cpp).
+// Runtime tuning vectors from ImGui (defined in D3D9Drv/ImGuiLinker.cpp).
+extern UBOOL GUnlockDoors;
 extern volatile float GDebugVec0[3]; // WorkerHead->Origin
 extern volatile float GDebugVec1[3]; // AttachComponent offset
 
@@ -10733,7 +10734,10 @@ void AOLHero::UpdateHealth(FLOAT deltaTime)
 			if (!appIsNearlyZero(deltaHobble, KINDA_SMALL_NUMBERF))
 			{				
 				FLOAT thisFrame = deltaTime * HobbleApproachRate;
-				HobblingIntensity = Max(TargetHobblingIntensity, HobblingIntensity - thisFrame);
+				if (deltaHobble > 0.f)
+					HobblingIntensity = Min(TargetHobblingIntensity, HobblingIntensity + thisFrame);
+				else
+					HobblingIntensity = Max(TargetHobblingIntensity, HobblingIntensity - thisFrame);
 			}
 		}
 	}

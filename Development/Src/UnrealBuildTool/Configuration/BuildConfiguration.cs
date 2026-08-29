@@ -14,7 +14,7 @@ namespace UnrealBuildTool
 		public static bool bUseUnityBuild = Utils.GetEnvironmentVariable("ue3.bUseUnityBuild", true);
 
 		/** An approximate number of bytes of C++ code to target for inclusion in a single unified C++ file. */
-		public static int NumIncludedBytesPerUnityCPP = 256 * 1024;
+		public static int NumIncludedBytesPerUnityCPP = 64 * 1024;
 
 		/** Whether to stress test the C++ unity build robustness by including all C++ files files in a project from a single unified file. */
 		public static bool bStressTestUnity = Utils.GetEnvironmentVariable("ue3.bStressTestUnity", false);

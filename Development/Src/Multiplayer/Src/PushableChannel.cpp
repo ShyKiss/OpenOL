@@ -95,41 +95,86 @@ AOLPushableObject* UPushableChannel::FindPushableByKey(INT KeyX, INT KeyY, INT K
 // TickSend — send displacement of the locally active pushable every tick.
 // ============================================================================
 
+static void SendPushPacket(AOLPushableObject* P, FLOAT Disp, uint8_t bPushing)
+{
+    BYTE B[2 + sizeof(FPushStatePacket)];
+    INT  N = 0;
+    N = PutU8(B, N, CH_PUSH);
+    N = PutU8(B, N, PUSH_STATE);
+    FPushStatePacket Pkt;
+    appMemzero(&Pkt, sizeof(Pkt));
+    Pkt.KeyX      = (int32_t)P->Location.X;
+    Pkt.KeyY      = (int32_t)P->Location.Y;
+    Pkt.KeyZ      = (int32_t)P->Location.Z;
+    Pkt.DispX1000 = (int32_t)appRound(Disp * 1000.0f);
+    Pkt.Seq       = (uint32_t)++P->LocalPushSeq;
+    Pkt.bPushing  = bPushing;
+    appMemcpy(B + N, &Pkt, sizeof(Pkt));
+    N += sizeof(Pkt);
+    GMpConn.SendBinary(B, N);
+}
+
 void UPushableChannel::TickSend(FLOAT DeltaTime)
 {
-    if (!GMpConn.bIsConnected || !HeroPawn || !GMpConn.SyncInteractable)
+    if (!GMpConn.bIsConnected || !GMpConn.SyncInteractable)
         return;
 
-    AOLHero* Hero = Cast<AOLHero>(HeroPawn);
-    if (!Hero || !Hero->ActivePushable)
-        return;
-
-    AOLPushableObject* AP = Hero->ActivePushable;
+    AOLHero* Hero = HeroPawn ? Cast<AOLHero>(HeroPawn) : NULL;
+    AOLPushableObject* AP = Hero ? Hero->ActivePushable : NULL;
 
     if (!ControllerOwner->bPushablesIndexed)
         ControllerOwner->IndexPushables();
 
-    FLOAT Disp = AP->CurrentDisplacement;
+    // If hero is dead/absent: flush any pending stop-bursts, then reset state.
+    if (!Hero)
+    {
+        for (INT i = 0; i < ControllerOwner->CachedPushables.Num(); i++)
+        {
+            AOLPushableObject* P = ControllerOwner->CachedPushables(i);
+            if (!P) continue;
+            // If we were pushing this object, send one immediate stop packet
+            if (P->LocalPushSeq > 0 || P->PushStopRepeat > 0)
+                SendPushPacket(P, P->CurrentDisplacement, 0);
+            P->LocalPushSeq   = 0;
+            P->PushStopRepeat = 0;
+        }
+        return;
+    }
+
     for (INT i = 0; i < ControllerOwner->CachedPushables.Num(); i++)
     {
-        if (ControllerOwner->CachedPushables(i) == AP)
+        AOLPushableObject* P = ControllerOwner->CachedPushables(i);
+        if (!P) continue;
+
+        FLOAT Disp = P->CurrentDisplacement;
+
+        if (P == AP)
         {
-            if (Abs(Disp - ControllerOwner->LastSentPushDisplacement(i)) > 0.1f)
+            // Actively pushing — send on displacement change OR on first engagement (LocalPushSeq==0)
+            UBOOL bDispChanged = Abs(Disp - ControllerOwner->LastSentPushDisplacement(i)) > 0.1f;
+            if (bDispChanged || P->LocalPushSeq == 0)
             {
                 ControllerOwner->LastSentPushDisplacement(i) = Disp;
-                BYTE B[1 + sizeof(FPushStatePacket)];
-                INT  N = 0;
-                N = PutU8(B, N, MPKT_PUSH_STATE);
-                FPushStatePacket Pkt;
-                Pkt.KeyX      = (INT)AP->Location.X;
-                Pkt.KeyY      = (INT)AP->Location.Y;
-                Pkt.KeyZ      = (INT)AP->Location.Z;
-                Pkt.DispX1000 = appRound(Disp * 1000.0f);
-                appMemcpy(B + N, &Pkt, sizeof(Pkt));
-                N += sizeof(Pkt);
-                GMpConn.SendBinary(B, N);
+                P->PushStopRepeat = 0;
+                SendPushPacket(P, Disp, 1);
             }
-            break;
+        }
+        else if (P->PushStopRepeat > 0)
+        {
+            // Released — send bPushing=0 redundantly; server will clear owner on first arrival
+            SendPushPacket(P, Disp, 0);
+            if (--P->PushStopRepeat == 0)
+            {
+                // Stop local sound/state now that burst is done
+                P->StopMoving();
+                P->LocalPushSeq = 0;
+            }
+        }
+        else if (P->LocalPushSeq > 0 && P != AP)
+        {
+            // Was pushing but no longer active — trigger stop burst
+            P->PushStopRepeat = 5;
+            // LocalPushSeq reset happens after burst completes (in the PushStopRepeat branch above)
         }
     }
 }
@@ -148,16 +193,25 @@ void UPushableChannel::BroadcastPushableStates()
     for (INT i = 0; i < ControllerOwner->CachedPushables.Num(); i++)
     {
         AOLPushableObject* P = ControllerOwner->CachedPushables(i);
-        if (!P || P->CurrentDisplacement == 0.0f) continue;
+        if (!P) continue;
 
-        BYTE B[1 + sizeof(FPushStatePacket)];
+        // Skip pushables at rest — server only needs to know about non-zero positions.
+        // PUSH_INIT is first-write-wins: server ignores it if a snapshot already exists,
+        // so this broadcast won't overwrite state set by an active player.
+        if (Abs(P->CurrentDisplacement) < 0.5f) continue;
+
+        BYTE B[2 + sizeof(FPushStatePacket)];
         INT  N = 0;
-        N = PutU8(B, N, MPKT_PUSH_STATE);
+        N = PutU8(B, N, CH_PUSH);
+        N = PutU8(B, N, PUSH_INIT);  // first-write-wins; server stores only if no snapshot exists
         FPushStatePacket Pkt;
+        appMemzero(&Pkt, sizeof(Pkt));
         Pkt.KeyX      = (INT)P->Location.X;
         Pkt.KeyY      = (INT)P->Location.Y;
         Pkt.KeyZ      = (INT)P->Location.Z;
         Pkt.DispX1000 = appRound(P->CurrentDisplacement * 1000.0f);
+        Pkt.Seq       = 0;    // init snapshot has no sequence — receivers accept unconditionally
+        Pkt.bPushing  = 0;    // always a position sync, never an active push signal
         appMemcpy(B + N, &Pkt, sizeof(Pkt));
         N += sizeof(Pkt);
         GMpConn.SendBinary(B, N);
@@ -175,10 +229,12 @@ void PushableChannel_OnBinaryPushState(UPushableChannel* Ch, INT SenderID, BYTE*
     if (!GMpConn.SyncInteractable) return;
 
     const FPushStatePacket* Pkt = (const FPushStatePacket*)Data;
-    INT   KeyX = Pkt->KeyX;
-    INT   KeyY = Pkt->KeyY;
-    INT   KeyZ = Pkt->KeyZ;
-    FLOAT Disp = Pkt->DispX1000 / 1000.0f;
+    INT      KeyX     = (INT)Pkt->KeyX;
+    INT      KeyY     = (INT)Pkt->KeyY;
+    INT      KeyZ     = (INT)Pkt->KeyZ;
+    FLOAT    Disp     = Pkt->DispX1000 / 1000.0f;
+    UINT     Seq      = Pkt->Seq;
+    UBOOL    bPushing = Pkt->bPushing != 0;
 
     AMultiplayerController* Ctrl = Ch->ControllerOwner;
 
@@ -188,6 +244,8 @@ void PushableChannel_OnBinaryPushState(UPushableChannel* Ch, INT SenderID, BYTE*
     AOLPushableObject* P = Ch->FindPushableByKey(KeyX, KeyY, KeyZ);
     if (!P)
     {
+        // Actor not loaded yet — queue only active pushes (stop packets are irrelevant)
+        if (!bPushing) return;
         for (INT i = 0; i < Ctrl->PendingPushStates.Num(); i++)
         {
             if (Ctrl->PendingPushStates(i).KeyX == KeyX
@@ -203,13 +261,69 @@ void PushableChannel_OnBinaryPushState(UPushableChannel* Ch, INT SenderID, BYTE*
         return;
     }
 
-    if (P->bPlayerLocked) return;
+    // Drop out-of-order packets (sequence wrap handled via signed comparison).
+    // Stop packets (bPushing=0) always pass — never drop them or the looping sound gets stuck.
+    if (bPushing && Seq != 0 && (INT)(Seq - (UINT)P->RemotePushSeq) <= 0)
+        return;
+    P->RemotePushSeq = (INT)Seq;
 
+    // If we own this pushable locally, ignore remote active pushes but still process stops
+    // so bNetLocked is cleared and the looping sound stops if the remote released it.
+    if (P->bPlayerLocked && bPushing) return;
+
+    if (!bPushing)
+    {
+        // Remote player released — always stop movement regardless of bNetLocked.
+        // StopMoving must be called even if bNetLocked is false (e.g. stop packet
+        // arrived before or without a matching start packet due to fast in/out).
+        if (P->bNetLocked)
+        {
+            P->bNetLocked    = FALSE;
+            P->RemotePushSeq = 0;
+            P->NetStopPushing();
+            P->PostAkEvent(P->SndStopPushing);
+        }
+        P->StopMoving();
+        P->SetNetDisplacement(Disp);
+        P->UpdateLinkedDoorState();
+        return;
+    }
+
+    // Remote player actively pushing
     if (!P->bNetLocked)
     {
         P->bNetLocked = TRUE;
         P->NetStartPushing();
+        P->PostAkEvent(P->SndStartPushing);
+        P->bPushActive = TRUE;
     }
+    P->NetPushLastTime = GWorld ? GWorld->GetTimeSeconds() : 0.0f;
     P->SetNetDisplacement(Disp);
     P->UpdateLinkedDoorState();
+}
+
+// ============================================================================
+// OnBinaryPushDenied — server rejected our PUSH_STATE (another player owns it).
+// Force-stop local push animation immediately.
+// ============================================================================
+
+void PushableChannel_OnBinaryPushDenied(UPushableChannel* Ch, BYTE* Data, INT DataLen)
+{
+    if (!Ch || !Ch->ControllerOwner) return;
+    if (DataLen < 12) return; // [KeyX(4)][KeyY(4)][KeyZ(4)]
+
+    INT KeyX = (INT)(Data[0] | (Data[1] << 8) | (Data[2] << 16) | (Data[3] << 24));
+    INT KeyY = (INT)(Data[4] | (Data[5] << 8) | (Data[6] << 16) | (Data[7] << 24));
+    INT KeyZ = (INT)(Data[8] | (Data[9] << 8) | (Data[10] << 16) | (Data[11] << 24));
+
+    AOLPushableObject* P = Ch->FindPushableByKey(KeyX, KeyY, KeyZ);
+    if (!P) return;
+
+    // Cancel outgoing burst and stop local animation
+    P->PushStopRepeat = 0;
+    P->LocalPushSeq   = 0;
+
+    AOLHero* Hero = Ch->HeroPawn ? Cast<AOLHero>(Ch->HeroPawn) : NULL;
+    if (Hero && Hero->ActivePushable == P)
+        Hero->StopPushing(); // releases bPlayerLocked + clears ActivePushable
 }

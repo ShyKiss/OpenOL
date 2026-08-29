@@ -7,7 +7,10 @@
 #if WITH_APEX
 #include "..\Src\NvApexRender.h"
 #endif
-#include "OLImGui.h"
+#include "ImGuiLinker.h"
+
+// Forward declaration — implemented in OLGame/Src/OLViewportSHM.cpp
+extern void OLViewportSHM_CopyFrame(IDirect3DDevice9* Device, IDirect3DSurface9* BackBuffer, UINT W, UINT H);
 
 /**
  * Present sometimes returns the following error. Treating the error as a lost
@@ -89,8 +92,9 @@ void FD3D9DynamicRHI::BeginDrawingViewport(FViewportRHIParamRef ViewportRHI)
 	// Tell D3D we're going to start rendering.
 	Direct3DDevice->BeginScene();
 
-	// Start a new ImGui frame at the beginning of each viewport draw
-	OLImGui_NewFrame();
+	// Start a new ImGui frame at the beginning of each viewport draw (not in editor)
+	if (!GIsEditor)
+		OLImGui_NewFrame();
 
 	// update any resources that needed a deferred update
 	FDeferredUpdateResource::UpdateResources();
@@ -202,8 +206,33 @@ void FD3D9DynamicRHI::EndDrawingViewport(FViewportRHIParamRef ViewportRHI,UBOOL 
 		appPanoramaRenderHookRender();
 	#endif
 
-	// Render ImGui on top of the game scene, before EndScene.
-	OLImGui_Render();
+	// Render ImGui on top of the game scene, before EndScene (not in editor).
+	if (!GIsEditor)
+		OLImGui_Render();
+
+	// Clear any D3DPOOL_DEFAULT resource bindings ImGui may have left on the device.
+	Direct3DDevice->SetStreamSource(0, NULL, 0, 0);
+	Direct3DDevice->SetIndices(NULL);
+	for (UINT TexIdx = 0; TexIdx < 8; TexIdx++)
+		Direct3DDevice->SetTexture(TexIdx, NULL);
+	Direct3DDevice->SetVertexShader(NULL);
+	Direct3DDevice->SetPixelShader(NULL);
+	Direct3DDevice->SetVertexDeclaration(NULL);
+	Direct3DDevice->SetRenderTarget(0, *BackBuffer);
+	Direct3DDevice->SetDepthStencilSurface(NULL);
+
+#if WITH_EDITOR
+	if (GIsEditor)
+	{
+		// Copy backbuffer to shared memory before EndScene, while it's still the active render target.
+		IDirect3DSurface9* BackBuf = NULL;
+		if (SUCCEEDED(Direct3DDevice->GetRenderTarget(0, &BackBuf)))
+		{
+			OLViewportSHM_CopyFrame(Direct3DDevice, BackBuf, Viewport->GetSizeX(), Viewport->GetSizeY());
+			BackBuf->Release();
+		}
+	}
+#endif
 
 	// Tell D3D we're done rendering.
 	Direct3DDevice->EndScene();

@@ -77,7 +77,8 @@
     <ClCompile Include="Src\D3D9Viewport.cpp" />
     <ClCompile Include="Src\HardwareID.cpp" />
     <ClCompile Include="Src\VideoDevice.cpp" />
-    <ClCompile Include="Src\OLImGui.cpp" />
+    <ClCompile Include="Src\ImGuiLinker.cpp" />
+    <ClCompile Include="Src\NotoSans_Regular.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

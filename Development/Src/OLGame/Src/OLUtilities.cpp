@@ -194,13 +194,22 @@ FLOAT Utils::GetAspectRatio()
 
 AOLCheckpoint* Utils::GetCheckpointFromName(FName checkpointName)
 {
-	for( FActorIterator It; It; ++It)
+	// First look in world levels (fast path, covers the common case).
+	for (FActorIterator It; It; ++It)
 	{
 		AOLCheckpoint* Checkpoint = Cast<AOLCheckpoint>(*It);
 		if (Checkpoint && Checkpoint->CheckpointName == checkpointName)
-		{
 			return Checkpoint;
-		}
+	}
+
+	// Fallback: search all loaded objects — covers checkpoints loaded from
+	// packages that are in memory but not spawned into GWorld->Levels
+	// (e.g. DLC_Checkpoints loaded for the ImGui checkpoint tab).
+	for (TObjectIterator<AOLCheckpoint> It; It; ++It)
+	{
+		if (It->IsPendingKill()) continue;
+		if (It->CheckpointName == checkpointName)
+			return *It;
 	}
 
 	return NULL;
@@ -481,30 +490,44 @@ void UOLUtils::GetModPackages(const FString& SubDir, TArray<FString>& PackageNam
 	FindFilesInModSubdir(SubDir, TEXT("*.upk"), PackageNames);
 }
 
+// Recursively search Dir and all subdirectories for PackageName.upk / .udk.
+static FString FindModPackageFileRecursive(const FString& Dir, const FString& PackageName)
+{
+	// Check in current directory first.
+	const FString UpkPath = Dir + PackageName + TEXT(".upk");
+	const FString UdkPath = Dir + PackageName + TEXT(".udk");
+	if (GFileManager->FileSize(*UpkPath) >= 0) return UpkPath;
+	if (GFileManager->FileSize(*UdkPath) >= 0) return UdkPath;
+
+	// Enumerate subdirectories.
+	TArray<FString> SubDirs;
+	GFileManager->FindFiles(SubDirs, *(Dir + TEXT("*")), FALSE, TRUE);
+	for (INT i = 0; i < SubDirs.Num(); ++i)
+	{
+		FString Found = FindModPackageFileRecursive(Dir + SubDirs(i) + TEXT("\\"), PackageName);
+		if (!Found.IsEmpty())
+			return Found;
+	}
+	return TEXT("");
+}
+
 static FString FindModPackageFile(const FString& PackageName)
 {
-	TArray<FString> SearchDirs;
+	TArray<FString> RootDirs;
 
 	FString CookedPath;
 	appGetCookedContentPath(appGetPlatformType(), CookedPath);
-	SearchDirs.AddItem(CookedPath);
-	SearchDirs.AddItem(CookedPath + TEXT("Mods\\Persistent\\"));
+	RootDirs.AddItem(CookedPath);
 
-	if (Utils::IsDLCInstalled())
-	{
-		SearchDirs.AddItem(appGameDir() + TEXT("CookedPCConsoleDLC\\"));
-	}
+	// Always include DLC directory — checkpoint packages may be needed
+	// even when DLC is not installed (e.g. loading DLC checkpoints from base game).
+	RootDirs.AddItem(appGameDir() + TEXT("CookedPCConsoleDLC\\"));
 
-	for (INT i = 0; i < SearchDirs.Num(); i++)
+	for (INT i = 0; i < RootDirs.Num(); ++i)
 	{
-		if (GFileManager->FileSize(*(SearchDirs(i) + PackageName + TEXT(".upk"))) >= 0)
-		{
-			return SearchDirs(i) + PackageName + TEXT(".upk");
-		}
-		if (GFileManager->FileSize(*(SearchDirs(i) + PackageName + TEXT(".udk"))) >= 0)
-		{
-			return SearchDirs(i) + PackageName + TEXT(".udk");
-		}
+		FString Found = FindModPackageFileRecursive(RootDirs(i), PackageName);
+		if (!Found.IsEmpty())
+			return Found;
 	}
 	return TEXT("");
 }
@@ -565,6 +588,87 @@ UBOOL UOLUtils::LoadModPackage(const FString& PackageName)
 	return TRUE;
 }
 
+UPackage* Utils::LoadModPackage(const FString& PackageName)
+{
+	// Return already-loaded package if present.
+	UPackage* Existing = FindObject<UPackage>(NULL, *PackageName, TRUE);
+	if (Existing)
+		return Existing;
+
+	FString FullPath = FindModPackageFile(PackageName);
+	if (FullPath.IsEmpty())
+	{
+		debugf(TEXT("Utils::LoadModPackage: '%s' not found in search dirs"), *PackageName);
+		return NULL;
+	}
+
+	GPackageFileCache->CachePackage(*FullPath, TRUE, FALSE);
+	UPackage* Pkg = UObject::LoadPackage(NULL, *FullPath, LOAD_None);
+	if (!Pkg)
+		debugf(TEXT("Utils::LoadModPackage: LoadPackage failed for '%s'"), *PackageName);
+	return Pkg;
+}
+
+AActor* Utils::SpawnActorFromPackage(const FString& PackageName, UClass* ActorClass, FName ActorTag)
+{
+	if (!ActorClass || !GWorld)
+		return NULL;
+
+	// Load the package (no-op if already in memory).
+	FString FullPath = FindModPackageFile(PackageName);
+	if (FullPath.IsEmpty())
+	{
+		debugf(TEXT("SpawnActorFromPackage: '%s' not found"), *PackageName);
+		return NULL;
+	}
+
+	UPackage* Pkg = EnsureModPackageLoaded(PackageName, FullPath);
+	if (!Pkg)
+		return NULL;
+
+	// Find the first actor of the requested class in the package.
+	AActor* SrcActor = NULL;
+	for (TObjectIterator<AActor> It; It; ++It)
+	{
+		if (It->GetOutermost() != Pkg)
+			continue;
+		if (!It->IsA(ActorClass))
+			continue;
+		if (ActorTag != NAME_None && It->Tag != ActorTag)
+			continue;
+		SrcActor = *It;
+		break;
+	}
+
+	if (!SrcActor)
+	{
+		debugf(TEXT("SpawnActorFromPackage: no '%s' actor found in '%s'"),
+			*ActorClass->GetName(), *PackageName);
+		return NULL;
+	}
+
+	// Spawn a fresh instance in the current world and copy all properties.
+	AActor* DstActor = GWorld->SpawnActor(ActorClass, NAME_None,
+		SrcActor->Location, SrcActor->Rotation);
+	if (!DstActor)
+	{
+		debugf(TEXT("SpawnActorFromPackage: SpawnActor failed for '%s'"), *ActorClass->GetName());
+		return NULL;
+	}
+
+	// Copy all non-component properties from SrcActor to DstActor.
+	for (TFieldIterator<UProperty> It(ActorClass); It; ++It)
+	{
+		UProperty* Prop = *It;
+		if (Prop->PropertyFlags & (CPF_Component | CPF_Transient | CPF_Native))
+			continue;
+		BYTE* Src = (BYTE*)SrcActor + Prop->Offset;
+		BYTE* Dst = (BYTE*)DstActor + Prop->Offset;
+		Prop->CopyCompleteValue(Dst, Src, NULL, DstActor);
+	}
+	return DstActor;
+}
+
 UObject* Utils::LoadObjectFromModPackage(const FString& PackageName, const FString& ObjectName, UClass* ObjectClass)
 {
 	if (!ObjectClass)
@@ -603,7 +707,6 @@ UObject* Utils::LoadObjectFromModPackage(const FString& PackageName, const FStri
 	}
 
 	UPackage* Pkg = CastChecked<UPackage>(Linker->LinkerRoot);
-	Pkg->AddToRoot();
 
 	// Walk the dot-separated ObjectName to find the export index of each part,
 	// then call CreateByOuterIndex only for the final leaf object.
@@ -633,9 +736,10 @@ UObject* Utils::LoadObjectFromModPackage(const FString& PackageName, const FStri
 
 		if (Found == INDEX_NONE)
 		{
-			UObject::EndLoad();
-			debugf(TEXT("LoadObjectFromModPackage: outer part '%s' not found in ExportMap for '%s'"), *Parts(PartIdx), *ObjectName);
-			return NULL;
+			// Seekfree packages strip intermediate outers from ExportMap.
+			// Fall back to searching from the package root.
+			CurrentOuterExportIdx = INDEX_NONE;
+			break;
 		}
 		CurrentOuterExportIdx = Found;
 	}
@@ -646,13 +750,10 @@ UObject* Utils::LoadObjectFromModPackage(const FString& PackageName, const FStri
 	UObject* Result = Linker->CreateByOuterIndex(ObjectClass, LeafName, OuterIdxForCreate, LOAD_None, FALSE);
 	UObject::EndLoad();
 
-	if (Result)
-	{
-		Result->AddToRoot();
-	}
-	else
+	if (!Result)
 	{
 		debugf(TEXT("LoadObjectFromModPackage: '%s' not found in '%s'"), *LeafName.ToString(), *ObjectName);
+		return NULL;
 	}
 	return Result;
 }
@@ -661,3 +762,4 @@ UObject* UOLUtils::LoadObjectFromModPackage(const FString& PackageName, const FS
 {
 	return Utils::LoadObjectFromModPackage(PackageName, ObjectName, ObjectClass);
 }
+

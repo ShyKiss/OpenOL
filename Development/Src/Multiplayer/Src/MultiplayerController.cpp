@@ -1,7 +1,8 @@
 #include "Multiplayer.h"
 #include "OLGameClasses.h"
-#include "..\..\D3D9Drv\Src\OLImGui.h"
+#include "OpenOLGlobals.h"
 #include "HeroChannel.h"
+#include "OLUtilities.h"
 #include "HeroChannelPackets.h"
 #include "DoorChannel.h"
 #include "EnemyChannel.h"
@@ -13,29 +14,6 @@
 
 extern FMpConnectionTicker* GMpTicker;
 
-// ImGui debug overlay: spawn a Soldier near the local player via OLCheatManager::SpawnEnemy.
-static void ImGuiAction_SpawnSoldier()
-{
-    if (!GEngine || GEngine->GamePlayers.Num() == 0)
-        return;
-    ULocalPlayer* LP = GEngine->GamePlayers(0);
-    if (!LP || !LP->Actor || !LP->Actor->CheatManager)
-        return;
-    UOLCheatManager* CM = Cast<UOLCheatManager>(LP->Actor->CheatManager);
-    if (!CM)
-        return;
-
-    struct FSpawnEnemyParms
-    {
-        FString EnemyType;
-        BYTE    WeaponToUse;
-        UBOOL   ShouldAttack;
-    } Parms;
-    Parms.EnemyType   = TEXT("Soldier");
-    Parms.WeaponToUse = 0; // EWeaponToUse::Weapon_None
-    Parms.ShouldAttack = TRUE;
-    CM->ProcessEvent(CM->FindFunctionChecked(FName(TEXT("SpawnEnemy"))), &Parms);
-}
 
 void AMultiplayerController::NativeInit()
 {
@@ -51,12 +29,35 @@ void AMultiplayerController::NativeInit()
         atexit([]() { GMpConn.Disconnect(); });
     }
 
-    // Register ImGui debug overlay actions (idempotent: only adds once per process lifetime).
-    static bool bActionsRegistered = false;
-    if (!bActionsRegistered)
+    // LoadConfig() runs once and checks cmdline for -openol_host (Steam cold-launch).
+    // Do it before Connect() so we can take the P2P branch if needed.
+    // Skip if bP2PMode or bHostMode — caller already set the connection params.
+    if (!GMpConn.bP2PMode && !GMpConn.bHostMode)
+        GMpConn.LoadConfig();
+
+    // Override username from Steam — Steamworks is guaranteed alive by NativeInit time,
+    // whereas LoadConfig() may run before Steam is ready (GSteamFriends == NULL then).
     {
-        OLImGui_RegisterAction("Spawn Soldier", ImGuiAction_SpawnSoldier);
-        bActionsRegistered = true;
+        char SteamName[128] = {0};
+        GetSteamPersonaName(SteamName, sizeof(SteamName));
+        debugf(NAME_Log, TEXT("[MP] Steam persona: '%s'"), UTF8_TO_TCHAR(SteamName));
+        if (SteamName[0])
+            GMpConn.Username = FString(UTF8_TO_TCHAR(SteamName));
+        debugf(NAME_Log, TEXT("[MP] Username set to: '%s'"), *GMpConn.Username);
+    }
+
+    // Cold-launch P2P join: skip DNS connect, go straight to P2P bridge.
+    if (GMpConn.bP2PColdLaunch)
+    {
+        GMpConn.bP2PColdLaunch = FALSE;
+        FString HostID   = GMpConn.P2PColdLaunchHost;
+        FString RoomCode = GMpConn.P2PColdLaunchRoom;
+        WORD    Port     = (WORD)appAtoi(*GMpConn.UdpPort);
+        debugf(NAME_Log, TEXT("[MP] P2P cold-launch: host=%s port=%d room='%s'"), *HostID, (int)Port, *RoomCode);
+        QWORD SteamID = (QWORD)appAtoi64(*HostID);
+        if (SteamID != 0)
+            GMpConn.ConnectP2P(SteamID, Port, RoomCode, TEXT(""));
+        return;
     }
 
     GMpConn.Connect();
@@ -133,15 +134,18 @@ void AMultiplayerController::OnConnected()
     }
     GMpConn.PingTimer = 0.5f;
 
-    // Send binary HELLO (0x02): [nick_len(1)][nick ASCII...]
+    // Send binary HELLO: Data=[CH_SRV][SRV_HELLO][nick_len(1)][nick ASCII...]
+    // SendBinary inserts player_id after byte[1], so wire is:
+    //   [CH_SRV][SRV_HELLO][player_id LE4][nick_len(1)][nick ASCII...]
     FString Nick = GMpConn.Username.Len() > 0
         ? FString(GMpConn.Username)
         : FString(TEXT("Player"));
     INT NickLen = Min(Nick.Len(), 32);
 
-    BYTE B[2 + 32];
+    BYTE B[3 + 32];
     INT N = 0;
-    N = PutU8(B, N, MPKT_HELLO);
+    N = PutU8(B, N, CH_SRV);
+    N = PutU8(B, N, SRV_HELLO);
     N = PutU8(B, N, (BYTE)NickLen);
     for (INT i = 0; i < NickLen; i++)
         B[N++] = (BYTE)((*Nick)[i] & 0x7F);
@@ -234,108 +238,130 @@ void AMultiplayerController::OnReceiveData(const FString& Data)
 // Binary packet routing
 // ============================================================================
 
+// Called from MultiplayerLink with:
+//   For SRV packets (0xE0+): PktType=type, SenderID=0, Data=payload, DataLen=payloadLen
+//   For game packets:        PktType=channel, SenderID=sender, Data=[type(1)][payload...], DataLen=1+payloadLen
 void AMultiplayerController::OnReceiveBinaryData(BYTE PktType, INT SenderID, BYTE* Data, INT DataLen)
 {
-    switch (PktType)
+    // --- Server→client packets (PktType >= 0xE0) ---
+    if (PktType >= 0xE0)
     {
-        // ---- Server → client notifications ----
-        // ---- Server → client notifications (SenderID=0, payload starts at Data[0]) ----
+        switch (PktType)
+        {
         case SRV_READY:
-            // Handled in MultiplayerLink.cpp (parses into GMpConn before this call).
             ServerName  = GMpConn.ServerName;
             OnlineCount = GMpConn.OnlineCount;
             break;
         case SRV_ONLINE_COUNT:
-        {
-            // payload: [count LE4]
-            if (DataLen < 4) break;
-            INT Count = (INT)((DWORD)Data[0] | ((DWORD)Data[1]<<8) | ((DWORD)Data[2]<<16) | ((DWORD)Data[3]<<24));
-            GMpConn.OnlineCount = Max(Count, 1);
-            OnlineCount = GMpConn.OnlineCount;
+            if (DataLen >= 4)
+            {
+                INT Count = (INT)((DWORD)Data[0] | ((DWORD)Data[1]<<8) | ((DWORD)Data[2]<<16) | ((DWORD)Data[3]<<24));
+                GMpConn.OnlineCount = Max(Count, 1);
+                OnlineCount = GMpConn.OnlineCount;
+            }
             break;
-        }
         case SRV_HELLO_FAIL:
-            // payload: [reason_len(1)][reason ASCII] — no action needed in C++
             break;
         case SRV_DISCONNECT:
-        {
-            // payload: [player_id LE4]
-            if (DataLen < 4) break;
-            INT PID = (INT)((DWORD)Data[0] | ((DWORD)Data[1]<<8) | ((DWORD)Data[2]<<16) | ((DWORD)Data[3]<<24));
-            if (WorldChannel)
+            if (DataLen >= 4)
             {
-                TArray<FString> Parts;
-                Parts.AddItem(FString::Printf(TEXT("%d"), PID));
-                Parts.AddItem(TEXT("DISCONNECT"));
-                WorldChannel->OnDisconnected(Parts, PID);
+                INT PID = (INT)((DWORD)Data[0] | ((DWORD)Data[1]<<8) | ((DWORD)Data[2]<<16) | ((DWORD)Data[3]<<24));
+                if (WorldChannel)
+                {
+                    TArray<FString> Parts;
+                    Parts.AddItem(FString::Printf(TEXT("%d"), PID));
+                    Parts.AddItem(TEXT("DISCONNECT"));
+                    WorldChannel->OnDisconnected(Parts, PID);
+                }
             }
             break;
-        }
         case SRV_DOOR_DENY:
-        {
-            // payload: [key_len(1)][key ASCII], key is "X,Y,Z"
-            if (DataLen < 2) break;
-            BYTE KLen = Data[0];
-            INT  KBytes = Min((INT)KLen, DataLen - 1);
-            TCHAR TmpKey[256] = {0};
-            for (INT i = 0; i < KBytes && i < 255; i++)
-                TmpKey[i] = (TCHAR)Data[1 + i];
-            if (DoorChannel)
+            if (DataLen >= 2)
             {
-                TArray<FString> KParts;
-                FString(TmpKey).ParseIntoArray(&KParts, TEXT(","), TRUE);
-                if (KParts.Num() >= 3)
-                    DoorChannel->OnDoorDeny(appAtoi(*KParts(0)), appAtoi(*KParts(1)), appAtoi(*KParts(2)));
+                BYTE KLen = Data[0];
+                INT  KBytes = Min((INT)KLen, DataLen - 1);
+                TCHAR TmpKey[256] = {0};
+                for (INT i = 0; i < KBytes && i < 255; i++)
+                    TmpKey[i] = (TCHAR)Data[1 + i];
+                if (DoorChannel)
+                {
+                    TArray<FString> KParts;
+                    FString(TmpKey).ParseIntoArray(&KParts, TEXT(","), TRUE);
+                    if (KParts.Num() >= 3)
+                        DoorChannel->OnDoorDeny(appAtoi(*KParts(0)), appAtoi(*KParts(1)), appAtoi(*KParts(2)));
+                }
             }
-            break;
-        }
-
-        // ---- Hero channel ----
-        case MPKT_STATE:          HeroChannel->OnBinaryLoc(SenderID, Data, DataLen);            break;
-        case MPKT_HEAD_ROT:       HeroChannel->OnBinaryHeadRot(SenderID, Data, DataLen);         break;
-        case MPKT_MESH_PRESET:    HeroChannel->OnBinaryMesh(SenderID, Data, DataLen);            break;
-        case MPKT_CINEMATIC_ANIM: HeroChannel->OnBinaryCinematicAnim(SenderID, Data, DataLen);   break;
-        case MPKT_SMT_TYPE:       HeroChannel->OnBinarySmtType(SenderID, Data, DataLen);         break;
-        case MPKT_PLAYER_EVENT:      HeroChannel->OnBinaryPlayerEvent(SenderID, Data, DataLen);      break;
-        case MPKT_PLAYER_LIFECYCLE:  HeroChannel->OnBinaryPlayerLifecycle(SenderID, Data, DataLen);  break;
-        case MPKT_ENPC_LOC:
-            if (EnemyChannel) EnemyChannel->OnBinaryLoc(SenderID, Data, DataLen);
-            break;
-        // ---- Enemy channel ----
-        case MPKT_ENPC_SPAWN:
-        case MPKT_ENPC_DEL:
-        case MPKT_ENPC_SMT:
-        case MPKT_ENPC_DOOR_OPEN:
-        case MPKT_ENPC_DOOR_DONE:
-        case MPKT_ENPC_DOOR_BASH:
-        case MPKT_ENPC_DOOR_BREAK:
-            if (EnemyChannel) EnemyChannel->OnBinaryPacket(SenderID, PktType, Data, DataLen);
-            break;
-        // ---- Door channel ----
-        case MPKT_DOOR_LOCK:
-        case MPKT_DOOR_UNLOCK:
-        case MPKT_DOOR_STATE:
-        case MPKT_DOOR_OPEN:
-        case MPKT_DOOR_CLOSE:
-        case MPKT_DOOR_ANGLE:
-        case MPKT_DOOR_PARAMS:
-            if (DoorChannel) DoorChannel->OnBinaryPacket(SenderID, PktType, Data, DataLen);
-            break;
-        case MPKT_PUSH_STATE:
-            PushableChannel_OnBinaryPushState(PushableChannel, SenderID, Data, DataLen);
-            break;
-        // ---- World channel ----
-        case MPKT_WORLD_NICK:
-        case MPKT_WORLD_TRIGGER_ACT:
-        case MPKT_WORLD_ITEM_CONSUME:
-        case MPKT_WORLD_PICKUP_KISMET:
-        case MPKT_WORLD_PICKUP_STATE:
-        case MPKT_WORLD_PICKUP_START:
-        case MPKT_WORLD_PICKUP_ATTACH:
-        case MPKT_WORLD_RECORDING:
-            if (WorldChannel) WorldChannel->OnBinaryWorldPacket(SenderID, PktType, Data, DataLen);
             break;
         default: break;
+        }
+        return;
+    }
+
+    // --- Game packets: PktType=channel, Data[0]=type, Data[1..]=payload ---
+    if (DataLen < 1) return;
+    BYTE Channel = PktType;
+    BYTE Type    = Data[0];
+    BYTE* Payload    = Data + 1;
+    INT   PayloadLen = DataLen - 1;
+
+    switch (Channel)
+    {
+    case CH_HERO:
+        switch (Type)
+        {
+        case HERO_STATE:          HeroChannel->OnBinaryLoc(SenderID, Payload, PayloadLen);            break;
+        case HERO_NICK:
+        {
+            if (WorldChannel)
+            {
+                FString NickStr;
+                // Payload: [utf8Len(1)][UTF-8 bytes]
+                if (PayloadLen >= 1)
+                {
+                    INT Utf8Len = Min((INT)Payload[0], PayloadLen - 1);
+                    UTF8ToFString(Payload + 1, Utf8Len, NickStr);
+                }
+                WorldChannel->OnBinaryNick(SenderID, NickStr);
+            }
+            break;
+        }
+        case HERO_HEAD_ROT:       HeroChannel->OnBinaryHeadRot(SenderID, Payload, PayloadLen);        break;
+        case HERO_MESH_PRESET:    HeroChannel->OnBinaryMesh(SenderID, Payload, PayloadLen);           break;
+        case HERO_CINEMATIC_ANIM: HeroChannel->OnBinaryCinematicAnim(SenderID, Payload, PayloadLen);  break;
+        case HERO_SMT_TYPE:       HeroChannel->OnBinarySmtType(SenderID, Payload, PayloadLen);        break;
+        case HERO_PLAYER_EVENT:   HeroChannel->OnBinaryPlayerEvent(SenderID, Payload, PayloadLen);    break;
+        case HERO_PLAYER_LIFECYCLE: HeroChannel->OnBinaryPlayerLifecycle(SenderID, Payload, PayloadLen); break;
+        default: break;
+        }
+        break;
+
+    case CH_DOOR:
+        if (DoorChannel) DoorChannel->OnBinaryPacket(SenderID, Type, Payload, PayloadLen);
+        break;
+
+    case CH_ENEMY:
+        if (Type == ENEMY_LOC)
+        {
+            if (EnemyChannel) EnemyChannel->OnBinaryLoc(SenderID, Payload, PayloadLen);
+        }
+        else
+        {
+            if (EnemyChannel) EnemyChannel->OnBinaryPacket(SenderID, Type, Payload, PayloadLen);
+        }
+        break;
+
+    case CH_PUSH:
+        if (Type == PUSH_STATE)
+            PushableChannel_OnBinaryPushState(PushableChannel, SenderID, Payload, PayloadLen);
+        else if (Type == PUSH_DENIED)
+            PushableChannel_OnBinaryPushDenied(PushableChannel, Payload, PayloadLen);
+        break;
+
+    case CH_WORLD:
+        if (WorldChannel) WorldChannel->OnBinaryWorldPacket(SenderID, Type, Payload, PayloadLen);
+        break;
+
+    default: break;
     }
 }
 

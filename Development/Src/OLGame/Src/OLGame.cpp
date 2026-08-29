@@ -108,6 +108,7 @@ void AutoCheckNativeClassSizesOLGame( UBOOL& Mismatch )
 IMPLEMENT_CLASS(UOLGameViewportClient);
 IMPLEMENT_CLASS(AOLGame);
 IMPLEMENT_CLASS(UOLTypes);
+IMPLEMENT_CLASS(UOLNetworkConfig);
 // Set by Multiplayer package on load so OLGame doesn't depend on it directly.
 void (*GReloadConfigCallback)() = NULL;
 
@@ -174,6 +175,7 @@ void AOLGame::OnTravelToStartupMap()
 		GOLDingo->UpdateSessionState(OLDingo::SS_Inactive);
 	}
 #endif
+
 }
 
 void AOLGame::HandlePaused()

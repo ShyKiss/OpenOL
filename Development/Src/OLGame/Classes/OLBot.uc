@@ -412,10 +412,15 @@ event FindPlayer()
 {
 	local OLHero H, Best;
 	local float D, BestDist;
+	local OLPlayerController LocalPC;
+
+	LocalPC = OLPlayerController(GetALocalPlayerController());
 
 	foreach WorldInfo.AllPawns(class'OLHero', H)
 	{
 		if (H.Health <= 0 || H.bDeleteMe || H.bIsGhost)
+			continue;
+		if (H.bIsDummyPawn && (LocalPC == None || !LocalPC.GetNetSyncEnemies()))
 			continue;
 		D = VSizeSq(H.Location - EnemyPawn.Location);
 		if (Best == None || D < BestDist)
@@ -460,8 +465,7 @@ function float ScoreTarget(OLHero H)
 
 	if (H.bIsDummyPawn)
 	{
-		foreach WorldInfo.AllControllers(class'OLPlayerController', LocalPC)
-			break;
+		LocalPC = OLPlayerController(GetALocalPlayerController());
 		if (LocalPC == None || !LocalPC.GetNetSyncEnemies())
 			return -1.f;
 	}
@@ -512,20 +516,17 @@ event PickClosestInRange()
 	local float Dist, ClosestDist;
 	local int Count;
 	local OLPlayerController LocalPC;
-	local bool bSyncEnemies;
 
 	if (TargetLockTimer > 0.f)
 		return;
 
-	foreach WorldInfo.AllControllers(class'OLPlayerController', LocalPC)
-		break;
-	bSyncEnemies = (LocalPC != None && LocalPC.GetNetSyncEnemies());
+	LocalPC = OLPlayerController(GetALocalPlayerController());
 
 	foreach WorldInfo.AllPawns(class'OLHero', H)
 	{
 		if (H.Health <= 0 || H.bDeleteMe || H.bIsGhost)
 			continue;
-		if (H.bIsDummyPawn && !bSyncEnemies)
+		if (H.bIsDummyPawn && (LocalPC == None || !LocalPC.GetNetSyncEnemies()))
 			continue;
 		Dist = VSize(H.Location - EnemyPawn.Location);
 		if (Dist <= EnemyPawn.AttackRange)
@@ -547,15 +548,28 @@ event PickBestTarget()
 {
 	local OLHero H, Best, MeleeOverride;
 	local float Score, BestScore, CurrentScore, Threshold, Dist;
+	local OLPlayerController LocalPC;
 	MeleeOverride = None;
 
 	if (TargetLockTimer > 0.f)
 		return;
 
+	LocalPC = OLPlayerController(GetALocalPlayerController());
+
+	// If current target is a dummy but SyncEnemies is off — drop it
+	if (TargetPlayer != None && TargetPlayer.bIsDummyPawn
+		&& (LocalPC == None || !LocalPC.GetNetSyncEnemies()))
+	{
+		TargetPlayer = None;
+		return;
+	}
+
 	CurrentScore = ScoreTarget(TargetPlayer);
 
 	foreach WorldInfo.AllPawns(class'OLHero', H)
 	{
+		if (H.bIsDummyPawn && (LocalPC == None || !LocalPC.GetNetSyncEnemies()))
+			continue;
 		Score = ScoreTarget(H);
 		if (Score < 0.f)
 			continue;

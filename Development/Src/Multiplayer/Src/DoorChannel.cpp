@@ -63,7 +63,8 @@ static void SendDoorState(INT X, INT Y, INT Z, FLOAT Angle, FLOAT Speed)
 {
     BYTE B[DOOR_STATE_SIZE];
     INT N = 0;
-    N = PutU8 (B, N, MPKT_DOOR_STATE);
+    N = PutU8 (B, N, CH_DOOR);
+    N = PutU8 (B, N, DOOR_STATE);
     N = PutI32(B, N, X);
     N = PutI32(B, N, Y);
     N = PutI32(B, N, Z);
@@ -77,7 +78,8 @@ static void SendDoorInit(INT X, INT Y, INT Z, FLOAT Angle)
 {
     BYTE B[DOOR_ANGLE_SIZE];
     INT N = 0;
-    N = PutU8 (B, N, MPKT_DOOR_INIT);
+    N = PutU8 (B, N, CH_DOOR);
+    N = PutU8 (B, N, DOOR_INIT);
     N = PutI32(B, N, X);
     N = PutI32(B, N, Y);
     N = PutI32(B, N, Z);
@@ -89,7 +91,8 @@ static void SendDoorUnlock(INT X, INT Y, INT Z)
 {
     BYTE B[DOOR_UNLOCK_SIZE];
     INT N = 0;
-    N = PutU8 (B, N, MPKT_DOOR_UNLOCK);
+    N = PutU8 (B, N, CH_DOOR);
+    N = PutU8 (B, N, DOOR_UNLOCK);
     N = PutI32(B, N, X);
     N = PutI32(B, N, Y);
     N = PutI32(B, N, Z);
@@ -191,7 +194,8 @@ void UDoorChannel::TickSend(FLOAT DeltaTime)
 
             BYTE B[DOOR_LOCK_SIZE];
             INT  N = 0;
-            N = PutU8 (B, N, MPKT_DOOR_LOCK);
+            N = PutU8 (B, N, CH_DOOR);
+            N = PutU8 (B, N, DOOR_LOCK);
             N = PutI32(B, N, X);
             N = PutI32(B, N, Y);
             N = PutI32(B, N, Z);
@@ -246,7 +250,8 @@ void UDoorChannel::OnLocalDoorOpen(AOLDoor* D)
     if (!D || !GMpConn.bIsConnected) return;
     BYTE B[DOOR_OPEN_SIZE];
     INT  N = 0;
-    N = PutU8 (B, N, MPKT_DOOR_OPEN);
+    N = PutU8 (B, N, CH_DOOR);
+    N = PutU8 (B, N, DOOR_OPEN);
     N = PutI32(B, N, appRound(D->Location.X));
     N = PutI32(B, N, appRound(D->Location.Y));
     N = PutI32(B, N, appRound(D->Location.Z));
@@ -258,7 +263,8 @@ void UDoorChannel::OnLocalDoorClose(AOLDoor* D)
     if (!D || !GMpConn.bIsConnected) return;
     BYTE B[DOOR_CLOSE_SIZE];
     INT  N = 0;
-    N = PutU8 (B, N, MPKT_DOOR_CLOSE);
+    N = PutU8 (B, N, CH_DOOR);
+    N = PutU8 (B, N, DOOR_CLOSE);
     N = PutI32(B, N, appRound(D->Location.X));
     N = PutI32(B, N, appRound(D->Location.Y));
     N = PutI32(B, N, appRound(D->Location.Z));
@@ -281,7 +287,7 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
 
     switch (PktType)
     {
-    case MPKT_DOOR_LOCK:
+    case DOOR_LOCK:
     {
         if (DataLen < (INT)sizeof(FDoorLockPacket)) return;
         const FDoorLockPacket* P = (const FDoorLockPacket*)Data;
@@ -323,7 +329,7 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
             TC->RemoteDoorLockExpiry(DoorIdx) = 0.0f;
         break;
     }
-    case MPKT_DOOR_UNLOCK:
+    case DOOR_UNLOCK:
     {
         if (DataLen < (INT)sizeof(FDoorUnlockPacket)) return;
         const FDoorUnlockPacket* P = (const FDoorUnlockPacket*)Data;
@@ -345,7 +351,7 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
         }
         break;
     }
-    case MPKT_DOOR_STATE:
+    case DOOR_STATE:
     {
         if (DataLen < (INT)sizeof(FDoorStatePacket)) return;
         const FDoorStatePacket* P = (const FDoorStatePacket*)Data;
@@ -367,7 +373,7 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
         }
         break;
     }
-    case MPKT_DOOR_OPEN:
+    case DOOR_OPEN:
     {
         if (DataLen < (INT)sizeof(FDoorOpenPacket) || !GMpConn.SyncInteractable) return;
         const FDoorOpenPacket* P = (const FDoorOpenPacket*)Data;
@@ -384,7 +390,7 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
         }
         break;
     }
-    case MPKT_DOOR_CLOSE:
+    case DOOR_CLOSE:
     {
         if (DataLen < (INT)sizeof(FDoorClosePacket) || !GMpConn.SyncInteractable) return;
         const FDoorClosePacket* P = (const FDoorClosePacket*)Data;
@@ -401,7 +407,7 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
         }
         break;
     }
-    case MPKT_DOOR_ANGLE:
+    case DOOR_ANGLE:
     {
         if (DataLen < (INT)sizeof(FDoorAnglePacket)) return;
         const FDoorAnglePacket* P = (const FDoorAnglePacket*)Data;
@@ -420,7 +426,7 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
         }
         break;
     }
-    case MPKT_DOOR_PARAMS:
+    case DOOR_PARAMS:
     {
         if (DataLen < (INT)sizeof(FDoorParamsPacket)) return;
         const FDoorParamsPacket* P = (const FDoorParamsPacket*)Data;

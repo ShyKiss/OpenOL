@@ -130,7 +130,8 @@ void UEnemyChannel::SendSpawn(AOLEnemyPawn* E)
     //         if bColor: [R(2)][G(2)][B(2)][A(2)]  (each * 1000, as I16)
     BYTE B[512];
     INT  N = 0;
-    N = PutU8 (B, N, MPKT_ENPC_SPAWN);
+    N = PutU8 (B, N, CH_ENEMY);
+    N = PutU8 (B, N, ENEMY_SPAWN);
     N = PutStr(B, N, EName);
     N = PutStr(B, N, ClassName);
     N = PutF32(B, N, E->Location.X);
@@ -167,7 +168,8 @@ static void SendEnemyLocBinary(AOLEnemyPawn* E,
     FString EName  = E->GetName();
     INT     NameLen = Min(EName.Len(), 31);
 
-    N = PutU8(B, N, MPKT_ENPC_LOC);
+    N = PutU8(B, N, CH_ENEMY);
+    N = PutU8(B, N, ENEMY_LOC);
     N = PutU8(B, N, NameLen);
     for (INT c = 0; c < NameLen; c++)
         N = PutU8(B, N, (BYTE)((*EName)[c] & 0x7F));
@@ -209,7 +211,8 @@ void UEnemyChannel::SendSMT(AOLEnemyPawn* E, INT Idx)
         && Now - ControllerOwner->LastBashLoopSentTime(Idx) >= 1.2f)
     {
         BYTE B[256]; INT N = 0;
-        N = PutU8(B, N, MPKT_ENPC_SMT);
+        N = PutU8(B, N, CH_ENEMY);
+        N = PutU8(B, N, ENEMY_SMT);
         N = PutStr(B, N, EName);
         const FEnpcSmtBody Body = { 90, 0, 0, 0, 0, 0 };
         appMemcpy(B + N, &Body, sizeof(Body));  N += sizeof(Body);
@@ -223,7 +226,8 @@ void UEnemyChannel::SendSMT(AOLEnemyPawn* E, INT Idx)
         if (ControllerOwner->LastEnemySMT(Idx) != 0)
         {
             BYTE B[256]; INT N = 0;
-            N = PutU8(B, N, MPKT_ENPC_SMT);
+            N = PutU8(B, N, CH_ENEMY);
+            N = PutU8(B, N, ENEMY_SMT);
             N = PutStr(B, N, EName);
             const FEnpcSmtBody Body = { 0, 0, 0, 0, 0, 0 };
             appMemcpy(B + N, &Body, sizeof(Body)); N += sizeof(Body);
@@ -276,7 +280,8 @@ void UEnemyChannel::SendSMTDirect(AOLEnemyPawn* E, INT SMTType, INT Param1, INT 
     AOLDoor* ActiveDoor = (E->Bot && E->Bot->ActiveDoor) ? E->Bot->ActiveDoor : NULL;
 
     BYTE B[256]; INT N = 0;
-    N = PutU8(B, N, MPKT_ENPC_SMT);
+    N = PutU8(B, N, CH_ENEMY);
+    N = PutU8(B, N, ENEMY_SMT);
     N = PutStr(B, N, EName);
     FEnpcSmtBody Body;
     Body.SMTType = (BYTE)SMTType;
@@ -311,7 +316,8 @@ void UEnemyChannel::SendEnemyDoorOpen(AOLEnemyPawn* Enemy, AOLDoor* D, FLOAT Spe
     if (!Enemy || !D || !GMpConn.bIsConnected) return;
     FString EName = Enemy->GetName();
     BYTE B[256]; INT N = 0;
-    N = PutU8(B, N, MPKT_ENPC_DOOR_OPEN);
+    N = PutU8(B, N, CH_ENEMY);
+    N = PutU8(B, N, ENEMY_DOOR_OPEN);
     N = PutStr(B, N, EName);
     FEnpcDoorBody Body;
     Body.DoorX   = (INT)D->Location.X;
@@ -328,7 +334,8 @@ void UEnemyChannel::SendEnemyDoorDone(AOLEnemyPawn* Enemy, AOLDoor* D, FLOAT Clo
     if (!Enemy || !D || !GMpConn.bIsConnected) return;
     FString EName = Enemy->GetName();
     BYTE B[256]; INT N = 0;
-    N = PutU8(B, N, MPKT_ENPC_DOOR_DONE);
+    N = PutU8(B, N, CH_ENEMY);
+    N = PutU8(B, N, ENEMY_DOOR_DONE);
     N = PutStr(B, N, EName);
     FEnpcDoorBody Body;
     Body.DoorX   = (INT)D->Location.X;
@@ -345,7 +352,8 @@ void UEnemyChannel::SendEnemyDoorBash(AOLEnemyPawn* Enemy, AOLDoor* D, UBOOL bRe
     if (!Enemy || !D || !GMpConn.bIsConnected) return;
     FString EName = Enemy->GetName();
     BYTE B[256]; INT N = 0;
-    N = PutU8(B, N, MPKT_ENPC_DOOR_BASH);
+    N = PutU8(B, N, CH_ENEMY);
+    N = PutU8(B, N, ENEMY_DOOR_BASH);
     N = PutStr(B, N, EName);
     FEnpcDoorBashBody Body; Body.DoorX = (INT)D->Location.X; Body.DoorY = (INT)D->Location.Y; Body.DoorZ = (INT)D->Location.Z; Body.bReversed = bReversed ? 1 : 0;
     appMemcpy(B + N, &Body, sizeof(Body)); N += sizeof(Body);
@@ -358,7 +366,8 @@ void UEnemyChannel::SendEnemyDoorBreak(AOLEnemyPawn* Enemy, AOLDoor* D, UBOOL bR
     if (!Enemy || !D || !GMpConn.bIsConnected) return;
     FString EName = Enemy->GetName();
     BYTE B[256]; INT N = 0;
-    N = PutU8(B, N, MPKT_ENPC_DOOR_BREAK);
+    N = PutU8(B, N, CH_ENEMY);
+    N = PutU8(B, N, ENEMY_DOOR_BREAK);
     N = PutStr(B, N, EName);
     FEnpcDoorBashBody Body; Body.DoorX = (INT)D->Location.X; Body.DoorY = (INT)D->Location.Y; Body.DoorZ = (INT)D->Location.Z; Body.bReversed = bReversed ? 1 : 0;
     appMemcpy(B + N, &Body, sizeof(Body)); N += sizeof(Body);
@@ -414,7 +423,8 @@ void UEnemyChannel::TickSend(FLOAT DeltaTime)
             {
                 FString EName = E->GetName();
                 BYTE B[256]; INT N = 0;
-                N = PutU8(B, N, MPKT_ENPC_DEL);
+                N = PutU8(B, N, CH_ENEMY);
+                N = PutU8(B, N, ENEMY_DEL);
                 N = PutStr(B, N, EName);
                 GMpConn.SendBinary(B, N);
             }
@@ -444,7 +454,8 @@ void UEnemyChannel::SendAllDeletes()
         if (!E) continue;
         FString EName = E->GetName();
         BYTE B[256]; INT N = 0;
-        N = PutU8(B, N, MPKT_ENPC_DEL);
+        N = PutU8(B, N, CH_ENEMY);
+        N = PutU8(B, N, ENEMY_DEL);
         N = PutStr(B, N, EName);
         GMpConn.SendBinary(B, N);
     }
@@ -793,7 +804,7 @@ void UEnemyChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT D
 
     switch (PktType)
     {
-    case MPKT_ENPC_SPAWN:
+    case ENEMY_SPAWN:
     {
         // [name][class][X(4)][Y(4)][Z(4)][Yaw(2)][mesh][weapon(1)][bColor(1)]
         // if bColor: [R(2)][G(2)][B(2)][A(2)]
@@ -825,13 +836,13 @@ void UEnemyChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT D
             HasColor != 0, CR, CG, CB, CA);
         break;
     }
-    case MPKT_ENPC_DEL:
+    case ENEMY_DEL:
     {
         Off = ReadStr(Data, Off, DataLen, EnemyName);
         ApplyDel(this, SenderID, EnemyName);
         break;
     }
-    case MPKT_ENPC_SMT:
+    case ENEMY_SMT:
     {
         // [name][SMTType(1)][Param1(4)][Param2(4)][DoorX(4)][DoorY(4)][DoorZ(4)]
         Off = ReadStr(Data, Off, DataLen, EnemyName);
@@ -867,8 +878,8 @@ void UEnemyChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT D
         }
         break;
     }
-    case MPKT_ENPC_DOOR_OPEN:
-    case MPKT_ENPC_DOOR_DONE:
+    case ENEMY_DOOR_OPEN:
+    case ENEMY_DOOR_DONE:
     {
         // [name][DoorX(4)][DoorY(4)][DoorZ(4)][Speed10(2)][Angle10(2)]
         Off = ReadStr(Data, Off, DataLen, EnemyName);
@@ -878,11 +889,11 @@ void UEnemyChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT D
         FLOAT Angle = (Body->Angle10 != 0) ? (FLOAT)Body->Angle10 / 10.f : 0.f;
         ApplyDoorEvent(this, SenderID, EnemyName,
             Body->DoorX, Body->DoorY, Body->DoorZ,
-            PktType == MPKT_ENPC_DOOR_DONE, Speed, Angle);
+            PktType == ENEMY_DOOR_DONE, Speed, Angle);
         break;
     }
-    case MPKT_ENPC_DOOR_BASH:
-    case MPKT_ENPC_DOOR_BREAK:
+    case ENEMY_DOOR_BASH:
+    case ENEMY_DOOR_BREAK:
     {
         // [name][DoorX(4)][DoorY(4)][DoorZ(4)][bReversed(1)]
         Off = ReadStr(Data, Off, DataLen, EnemyName);
@@ -890,7 +901,7 @@ void UEnemyChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT D
         const FEnpcDoorBashBody* Body = (const FEnpcDoorBashBody*)(Data + Off);
         ApplyDoorBashBreak(this, SenderID, EnemyName,
             Body->DoorX, Body->DoorY, Body->DoorZ,
-            Body->bReversed != 0, PktType == MPKT_ENPC_DOOR_BREAK);
+            Body->bReversed != 0, PktType == ENEMY_DOOR_BREAK);
         break;
     }
     default:

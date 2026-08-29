@@ -59,6 +59,8 @@ void UOLFXManager::BindToCurrentUberPostProcess()
 	{
 		CurrentUberPostEffect = NULL;
 	}
+	if (bGrainDisabled && CurrentUberPostEffect)
+		CurrentUberPostEffect->GrainOpacity = 0.0f;
 }
 
 UBOOL UOLFXManager::AreEffectsEnabled() const
@@ -269,6 +271,9 @@ void UOLFXManager::SetPPS(EPPSMode newPPS)
 			CurrentUberPostEffect = Cast<UOLUberPostProcessEffect>(LP->PlayerPostProcess->FindPostProcessEffect(UberPostEffectName));
 		}
 	}
+
+	if (bGrainDisabled && CurrentUberPostEffect)
+		CurrentUberPostEffect->GrainOpacity = 0.0f;
 
 	if (newPPS != PPS_GammaCalibration)
 	{

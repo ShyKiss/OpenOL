@@ -1624,7 +1624,8 @@ enum EProfileSettingID
     PSI_FinishedGame        =65,
     PSI_Southpaw            =66,
     PSI_FinishedDLC         =67,
-    PSI_MAX                 =68,
+    PSI_MaxFPS              =68,
+    PSI_MAX                 =69,
 };
 #define FOREACH_ENUM_EPROFILESETTINGID(op) \
     op(PSI_Unknown) \
@@ -1694,7 +1695,8 @@ enum EProfileSettingID
     op(PSI_ShowPrompts) \
     op(PSI_FinishedGame) \
     op(PSI_Southpaw) \
-    op(PSI_FinishedDLC) 
+    op(PSI_FinishedDLC) \
+    op(PSI_MaxFPS) 
 enum EAmbientOcclusionQuality
 {
     AO_High                 =0,

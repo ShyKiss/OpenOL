@@ -3743,11 +3743,36 @@ void ImGui::RenderTextEllipsis(ImDrawList* draw_list, const ImVec2& pos_min, con
 }
 
 // Render a rectangle shaped with optional rounding and borders
+// Compute vertical gradient colours from a base fill colour.
+// top: +12% brightness, bot: -10% brightness, alpha preserved.
+static void OL_GradientCols(ImU32 fill_col, ImU32& col_top, ImU32& col_bot)
+{
+    const ImU32 a  = fill_col & 0xFF000000;
+    const int   r  = (fill_col >>  0) & 0xFF;
+    const int   gr = (fill_col >>  8) & 0xFF;
+    const int   b  = (fill_col >> 16) & 0xFF;
+#define OL_CI(x) ((ImU32)((x) < 0 ? 0 : (x) > 255 ? 255 : (x)))
+    col_top = a | OL_CI(r + r*12/100) | (OL_CI(gr + gr*12/100) << 8) | (OL_CI(b + b*12/100) << 16);
+    col_bot = a | OL_CI(r - r*10/100) | (OL_CI(gr - gr*10/100) << 8) | (OL_CI(b - b*10/100) << 16);
+#undef OL_CI
+}
+
 void ImGui::RenderFrame(ImVec2 p_min, ImVec2 p_max, ImU32 fill_col, bool borders, float rounding)
 {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
-    window->DrawList->AddRectFilled(p_min, p_max, fill_col, rounding);
+    // Vertical gradient with correct rounding: per-vertex colour interpolated by Y.
+    ImU32 col_top, col_bot;
+    OL_GradientCols(fill_col, col_top, col_bot);
+    if (rounding < 0.5f)
+    {
+        window->DrawList->AddRectFilledMultiColor(p_min, p_max, col_top, col_top, col_bot, col_bot);
+    }
+    else
+    {
+        window->DrawList->PathRect(p_min, p_max, rounding, 0);
+        window->DrawList->PathFillConvexGradientV(col_top, col_bot, p_min.y, p_max.y);
+    }
     const float border_size = g.Style.FrameBorderSize;
     if (borders && border_size > 0.0f)
     {
@@ -6821,11 +6846,14 @@ void ImGui::RenderWindowDecorations(ImGuiWindow* window, const ImRect& title_bar
             window->DrawList->AddRectFilled(window->Pos + ImVec2(0, window->TitleBarHeight), window->Pos + window->Size, bg_col, window_rounding, (flags & ImGuiWindowFlags_NoTitleBar) ? 0 : ImDrawFlags_RoundCornersBottom);
         }
 
-        // Title bar
+        // Title bar — vertical gradient, respecting rounded top corners.
         if (!(flags & ImGuiWindowFlags_NoTitleBar))
         {
             ImU32 title_bar_col = GetColorU32(title_bar_is_highlight ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBg);
-            window->DrawList->AddRectFilled(title_bar_rect.Min, title_bar_rect.Max, title_bar_col, window_rounding, ImDrawFlags_RoundCornersTop);
+            ImU32 t_top, t_bot;
+            OL_GradientCols(title_bar_col, t_top, t_bot);
+            window->DrawList->PathRect(title_bar_rect.Min, title_bar_rect.Max, window_rounding, ImDrawFlags_RoundCornersTop);
+            window->DrawList->PathFillConvexGradientV(t_top, t_bot, title_bar_rect.Min.y, title_bar_rect.Max.y);
         }
 
         // Menu bar

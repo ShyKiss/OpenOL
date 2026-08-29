@@ -1105,6 +1105,112 @@ void ImDrawList::AddConvexPolyFilled(const ImVec2* points, const int points_coun
     }
 }
 
+// Vertical-gradient variant of AddConvexPolyFilled.
+// Each vertex colour is linearly interpolated between col_top (y=y_min) and col_bot (y=y_max).
+void ImDrawList::AddConvexPolyFilledGradientV(const ImVec2* points, const int points_count,
+    ImU32 col_top, ImU32 col_bot, float y_min, float y_max)
+{
+    if (points_count < 3) return;
+    if (((col_top | col_bot) & IM_COL32_A_MASK) == 0) return;
+
+    const float y_range = y_max - y_min;
+    const ImVec2 uv = _Data->TexUvWhitePixel;
+
+    // Helper: lerp two packed RGBA colours by t in [0,1].
+    auto LerpCol = [](ImU32 a, ImU32 b, float t) -> ImU32 {
+        const int ar = (a >>  0) & 0xFF, br = (b >>  0) & 0xFF;
+        const int ag = (a >>  8) & 0xFF, bg = (b >>  8) & 0xFF;
+        const int ab = (a >> 16) & 0xFF, bb = (b >> 16) & 0xFF;
+        const int aa = (a >> 24) & 0xFF, ba = (b >> 24) & 0xFF;
+        return ((ImU32)(ar + (int)((br - ar) * t + 0.5f)) <<  0)
+             | ((ImU32)(ag + (int)((bg - ag) * t + 0.5f)) <<  8)
+             | ((ImU32)(ab + (int)((bb - ab) * t + 0.5f)) << 16)
+             | ((ImU32)(aa + (int)((ba - aa) * t + 0.5f)) << 24);
+    };
+
+    if (Flags & ImDrawListFlags_AntiAliasedFill)
+    {
+        const float AA_SIZE = _FringeScale;
+        const int idx_count = (points_count - 2)*3 + points_count * 6;
+        const int vtx_count = points_count * 2;
+        PrimReserve(idx_count, vtx_count);
+
+        unsigned int vtx_inner_idx = _VtxCurrentIdx;
+        unsigned int vtx_outer_idx = _VtxCurrentIdx + 1;
+        for (int i = 2; i < points_count; i++)
+        {
+            _IdxWritePtr[0] = (ImDrawIdx)(vtx_inner_idx);
+            _IdxWritePtr[1] = (ImDrawIdx)(vtx_inner_idx + ((i-1) << 1));
+            _IdxWritePtr[2] = (ImDrawIdx)(vtx_inner_idx + (i     << 1));
+            _IdxWritePtr += 3;
+        }
+
+        _Data->TempBuffer.reserve_discard(points_count);
+        ImVec2* temp_normals = _Data->TempBuffer.Data;
+        for (int i0 = points_count - 1, i1 = 0; i1 < points_count; i0 = i1++)
+        {
+            float dx = points[i1].x - points[i0].x;
+            float dy = points[i1].y - points[i0].y;
+            IM_NORMALIZE2F_OVER_ZERO(dx, dy);
+            temp_normals[i0].x = dy;
+            temp_normals[i0].y = -dx;
+        }
+
+        for (int i0 = points_count - 1, i1 = 0; i1 < points_count; i0 = i1++)
+        {
+            const ImVec2& n0 = temp_normals[i0];
+            const ImVec2& n1 = temp_normals[i1];
+            float dm_x = (n0.x + n1.x) * 0.5f;
+            float dm_y = (n0.y + n1.y) * 0.5f;
+            IM_FIXNORMAL2F(dm_x, dm_y);
+            dm_x *= AA_SIZE * 0.5f;
+            dm_y *= AA_SIZE * 0.5f;
+
+            float t = (y_range > 0.0f) ? (points[i1].y - y_min) / y_range : 0.0f;
+            if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+            ImU32 col       = LerpCol(col_top, col_bot, t);
+            ImU32 col_trans = col & ~IM_COL32_A_MASK;
+
+            _VtxWritePtr[0].pos.x = points[i1].x - dm_x; _VtxWritePtr[0].pos.y = points[i1].y - dm_y;
+            _VtxWritePtr[0].uv = uv; _VtxWritePtr[0].col = col;
+            _VtxWritePtr[1].pos.x = points[i1].x + dm_x; _VtxWritePtr[1].pos.y = points[i1].y + dm_y;
+            _VtxWritePtr[1].uv = uv; _VtxWritePtr[1].col = col_trans;
+            _VtxWritePtr += 2;
+
+            _IdxWritePtr[0] = (ImDrawIdx)(vtx_inner_idx + (i1 << 1));
+            _IdxWritePtr[1] = (ImDrawIdx)(vtx_inner_idx + (i0 << 1));
+            _IdxWritePtr[2] = (ImDrawIdx)(vtx_outer_idx + (i0 << 1));
+            _IdxWritePtr[3] = (ImDrawIdx)(vtx_outer_idx + (i0 << 1));
+            _IdxWritePtr[4] = (ImDrawIdx)(vtx_outer_idx + (i1 << 1));
+            _IdxWritePtr[5] = (ImDrawIdx)(vtx_inner_idx + (i1 << 1));
+            _IdxWritePtr += 6;
+        }
+        _VtxCurrentIdx += (ImDrawIdx)vtx_count;
+    }
+    else
+    {
+        const int idx_count = (points_count - 2)*3;
+        const int vtx_count = points_count;
+        PrimReserve(idx_count, vtx_count);
+        for (int i = 0; i < vtx_count; i++)
+        {
+            float t = (y_range > 0.0f) ? (points[i].y - y_min) / y_range : 0.0f;
+            if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+            _VtxWritePtr[0].pos = points[i]; _VtxWritePtr[0].uv = uv;
+            _VtxWritePtr[0].col = LerpCol(col_top, col_bot, t);
+            _VtxWritePtr++;
+        }
+        for (int i = 2; i < points_count; i++)
+        {
+            _IdxWritePtr[0] = (ImDrawIdx)(_VtxCurrentIdx);
+            _IdxWritePtr[1] = (ImDrawIdx)(_VtxCurrentIdx + i - 1);
+            _IdxWritePtr[2] = (ImDrawIdx)(_VtxCurrentIdx + i);
+            _IdxWritePtr += 3;
+        }
+        _VtxCurrentIdx += (ImDrawIdx)vtx_count;
+    }
+}
+
 void ImDrawList::_PathArcToFastEx(const ImVec2& center, float radius, int a_min_sample, int a_max_sample, int a_step)
 {
     if (radius < 0.5f)

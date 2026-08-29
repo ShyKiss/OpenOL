@@ -208,6 +208,7 @@ typedef struct {
     int  pkt_len;
     int  room_idx;
     int  used;
+    int  owner_player_id;             // which player is currently pushing (0 = none)
 } PushSnapshot;
 
 // ---------------------------------------------------------------------------

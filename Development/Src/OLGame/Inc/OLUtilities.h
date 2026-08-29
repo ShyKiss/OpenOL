@@ -129,7 +129,52 @@ namespace Utils
 
 	void OutputTextToConsole(const FString& text);
 
+	AActor* SpawnActorFromPackage(const FString& PackageName, UClass* ActorClass, FName ActorTag = NAME_None);
 	UObject* LoadObjectFromModPackage(const FString& PackageName, const FString& ObjectName, UClass* ObjectClass);
+	// Load any mod package (upk or udk) by short name. No AddToRoot — caller decides lifetime.
+	// Returns NULL if not found or failed to load.
+	UPackage* LoadModPackage(const FString& PackageName);
+
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 helpers shared by multiplayer packet encode/decode
+// ---------------------------------------------------------------------------
+
+// Encode TCHAR string to UTF-8 bytes. Returns byte count written.
+// Dst must have at least MaxBytes bytes available.
+FORCEINLINE INT TCHARToUTF8(BYTE* Dst, INT MaxBytes, const TCHAR* Src)
+{
+    INT Out = 0;
+    for (INT i = 0; Src[i] && Out < MaxBytes - 3; ++i)
+    {
+        unsigned int C = (unsigned int)(unsigned short)Src[i];
+        if (C < 0x80)
+            { Dst[Out++] = (BYTE)C; }
+        else if (C < 0x800)
+            { Dst[Out++] = (BYTE)(0xC0 | (C >> 6)); Dst[Out++] = (BYTE)(0x80 | (C & 0x3F)); }
+        else
+            { Dst[Out++] = (BYTE)(0xE0 | (C >> 12)); Dst[Out++] = (BYTE)(0x80 | ((C >> 6) & 0x3F)); Dst[Out++] = (BYTE)(0x80 | (C & 0x3F)); }
+    }
+    return Out;
+}
+
+// Decode UTF-8 bytes into OutStr.
+FORCEINLINE void UTF8ToFString(const BYTE* Src, INT SrcLen, FString& OutStr)
+{
+    TCHAR Buf[256]; INT Out = 0;
+    for (INT i = 0; i < SrcLen && Out < 255; )
+    {
+        BYTE B0 = Src[i];
+        unsigned int C;
+        if ((B0 & 0x80) == 0)                          { C = B0; i += 1; }
+        else if ((B0 & 0xE0) == 0xC0 && i+1 < SrcLen) { C = ((B0&0x1F)<<6)|(Src[i+1]&0x3F); i += 2; }
+        else if ((B0 & 0xF0) == 0xE0 && i+2 < SrcLen) { C = ((B0&0x0F)<<12)|((Src[i+1]&0x3F)<<6)|(Src[i+2]&0x3F); i += 3; }
+        else { i++; continue; }
+        Buf[Out++] = (TCHAR)C;
+    }
+    Buf[Out] = 0;
+    OutStr = FString(Buf);
 }
 
 enum EOLStatGroups

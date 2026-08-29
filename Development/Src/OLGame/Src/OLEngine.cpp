@@ -32,7 +32,7 @@ extern "C"
 extern ISteamRemoteStorage*			GSteamRemoteStorage;
 #endif
 
-const INT GWhistleblowerAppId = 273300;
+extern const INT GWhistleblowerAppId = 273300;
 
 UBOOL IsUsingSteamCloud()
 {
@@ -360,7 +360,7 @@ void UOLEngine::StartCurrentCheckpoint()
 	bRestartingActiveCheckpoint = TRUE;
 }
 
-UBOOL UOLEngine::LoadSaveFile(const FString& Filename) // Windows/Mac 
+UBOOL UOLEngine::LoadSaveFile(const FString& Filename) // Windows/Mac
 {
 #if !CONSOLE
 	if (!GWorld->HasBegunPlay() || !AOLCheckpointList::GetCheckpointList())
@@ -1657,6 +1657,19 @@ UBOOL UOLEngine::UpdateProfileFromSystemSettings(UOLProfileSettings* userConfigu
 	UBOOL ok = userConfiguredSettings->SetProfileSettingValueId(PSI_Fullscreen, GSystemSettings.bFullscreen);
 	ok = ok && userConfiguredSettings->SetProfileSettingValueId(PSI_VSync, GSystemSettings.bUseVSync);
 
+	{
+		INT fpsCap = FPSC_62;
+		FLOAT maxFPS = GEngine->MaxSmoothedFrameRate;
+		if      (maxFPS <= 0.f)   fpsCap = FPSC_Unlimited;
+		else if (maxFPS <= 30.f)  fpsCap = FPSC_30;
+		else if (maxFPS <= 62.f)  fpsCap = FPSC_62;
+		else if (maxFPS <= 120.f) fpsCap = FPSC_120;
+		else if (maxFPS <= 144.f) fpsCap = FPSC_144;
+		else if (maxFPS <= 240.f) fpsCap = FPSC_240;
+		else                      fpsCap = FPSC_Unlimited;
+		ok = ok && userConfiguredSettings->SetProfileSettingValueId(PSI_MaxFPS, fpsCap);
+	}
+
 	INT resX = GSystemSettings.ResX;
 	INT resY = GSystemSettings.ResY;
 
@@ -1815,7 +1828,8 @@ UBOOL UOLEngine::ApplySystemSettings(UOLProfileSettings* userConfiguredSettings)
 	INT bFullScreen = GSystemSettings.bFullscreen;
 	INT bUseVSync = GSystemSettings.bUseVSync;
 	INT language = -1;
-	
+	INT fpsCap = FPSC_62;
+
 	EScreenResolution resolution = SR_Other;
 
 	UBOOL ok = userConfiguredSettings->GetProfileSettingValueId(PSI_TextureQuality, textureQualityLevel);
@@ -1825,6 +1839,7 @@ UBOOL UOLEngine::ApplySystemSettings(UOLProfileSettings* userConfiguredSettings)
 	ok = ok && userConfiguredSettings->GetProfileSettingValueId(PSI_VSync, bUseVSync);
 	ok = ok && userConfiguredSettings->GetProfileSettingValueId(PSI_Resolution, *(INT*)&resolution);
 	ok = ok && userConfiguredSettings->GetProfileSettingValueId(PSI_Language, language);
+	userConfiguredSettings->GetProfileSettingValueId(PSI_MaxFPS, fpsCap);
 
 
 	if (ok)
@@ -1917,6 +1932,13 @@ UBOOL UOLEngine::ApplySystemSettings(UOLProfileSettings* userConfiguredSettings)
 		GSystemSettings.GetBoolSettingFromIni(shadowSectionName, FString(TEXT("bAllowWholeSceneDominantShadows")), newSettings.bAllowWholeSceneDominantShadows);
 
 		bPendingGraphicalSettingsChange = TRUE;
+
+		static const FLOAT FPSCapValues[] = { 30.f, 62.f, 120.f, 144.f, 240.f, 0.f };
+		if (fpsCap >= 0 && fpsCap < ARRAY_COUNT(FPSCapValues))
+		{
+			GEngine->MaxSmoothedFrameRate = FPSCapValues[fpsCap];
+			GEngine->bSmoothFrameRate = (FPSCapValues[fpsCap] > 0.f);
+		}
 
 		INT curLang = LanguageStrToIdx(GetLanguage());
 

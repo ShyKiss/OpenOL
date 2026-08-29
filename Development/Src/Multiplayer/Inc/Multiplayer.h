@@ -58,6 +58,7 @@ public:
     UBOOL   bIsConnected;
     UBOOL   bIsHandshaked;
     UBOOL   bResolved;
+    UBOOL   bCancelled;   // set by CancelConnect(); suppresses auto-reconnect in Tick
     INT     LocalPlayerID;
     INT     HelloAttempt;
     FLOAT   LastReceivedTime;
@@ -77,6 +78,7 @@ public:
     UBOOL   SyncEnemies;
     UBOOL   SyncMatinees;
     UBOOL   SyncPickups;
+    UBOOL   SpeedrunMode;
 
     // Initialized flag — set after first LoadConfig(); avoids re-reading ini.
 
@@ -102,15 +104,26 @@ public:
     UBOOL   bP2PMode;
     QWORD   HostSteamID;
 
+    // Set by LoadConfig() if -openol_host was on the command line (Steam cold-launch).
+    UBOOL   bP2PColdLaunch;
+    FString P2PColdLaunchHost;
+    FString P2PColdLaunchRoom;
+
+    // Set when the local player is hosting — Connect() skips LoadConfig() so
+    // caller-supplied IP/Port/RoomCode are not overwritten by the ini.
+    UBOOL   bHostMode;
+
     FMpConnection()
-        : bIsConnected(FALSE), bIsHandshaked(FALSE), bResolved(FALSE)
+        : bIsConnected(FALSE), bIsHandshaked(FALSE), bResolved(FALSE), bCancelled(FALSE)
         , LocalPlayerID(0), HelloAttempt(0), LastReceivedTime(0.f)
         , HelloTimer(0.f), HeartbeatTimer(5.f)
         , SyncInteractable(TRUE), SyncEnemies(TRUE)
-        , SyncMatinees(TRUE), SyncPickups(TRUE)
+        , SyncMatinees(TRUE), SyncPickups(TRUE), SpeedrunMode(FALSE)
         , bHasSessionToken(FALSE)
         , OnlineCount(0), PingTimer(5.f)
         , bP2PMode(FALSE), HostSteamID(0)
+        , bP2PColdLaunch(FALSE)
+        , bHostMode(FALSE)
     {
         appMemzero(&ServerAddr, sizeof(ServerAddr));
         appMemzero(SessionToken, sizeof(SessionToken));
@@ -137,6 +150,10 @@ public:
 
     // Send DISCONNECT packet to server and reset connection state.
     void Disconnect();
+
+    // Abort an in-progress connection attempt (Resolving or Connecting) without
+    // sending DISCONNECT. Safe to call when already disconnected (no-op).
+    void CancelConnect();
 
     // Called every frame by FMpConnectionTicker.
     void Tick(FLOAT DeltaTime);
