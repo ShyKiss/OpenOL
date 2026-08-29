@@ -1016,6 +1016,7 @@ function bool SaveSettingsForList(array<OptionInfo> OptionInfos)
 						else
 							FXMgr.CurrentUberPostEffect.GrainOpacity = FXMgr.CurrentUberPostEffect.Default.GrainOpacity;
 					}
+					FXMgr.SaveConfig();
 					if (OptionOldValue_Bool != (CurrentOptionInfo.CurrentValueInt != 0))
 						bPropertyChanged = true;
 				}

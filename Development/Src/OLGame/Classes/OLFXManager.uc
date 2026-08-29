@@ -15,7 +15,7 @@ var PostProcessChain GammaCalibrationPPSChain;
 var array<MaterialInstanceConstant> NVSensitiveMaterials;
 var MaterialInstanceConstant CameraGlitchMat;
 var OLUberPostProcessEffect CurrentUberPostEffect;
-var bool bGrainDisabled;
+var config bool bGrainDisabled;
 var ParticleSystemComponent ElectricSparksParticles;
 var OLFXHolder FXHolder;
 

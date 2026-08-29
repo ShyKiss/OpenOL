@@ -179,41 +179,6 @@ static void DeleteDir(LPCWSTR dir)
 }
 
 // Unzip |zipPath| into |destDir| using the built-in Windows Shell.
-// Extract a .7z archive using 7z.exe from PATH or Program Files.
-static BOOL Extract7z(LPCWSTR archivePath, LPCWSTR destDir)
-{
-    // Try to find 7z.exe
-    WCHAR sevenZip[MAX_PATH] = L"7z.exe"; // try PATH first
-
-    WCHAR cmdLine[MAX_PATH * 3];
-    _snwprintf(cmdLine, _countof(cmdLine), L"\"%s\" x \"%s\" -o\"%s\" -y", sevenZip, archivePath, destDir);
-
-    STARTUPINFOW si = {}; si.cb = sizeof(si);
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
-    {
-        // Try common install paths
-        static const WCHAR* paths[] = {
-            L"C:\\Program Files\\7-Zip\\7z.exe",
-            L"C:\\Program Files (x86)\\7-Zip\\7z.exe",
-        };
-        for (int i = 0; i < 2; i++)
-        {
-            _snwprintf(cmdLine, _countof(cmdLine), L"\"%s\" x \"%s\" -o\"%s\" -y", paths[i], archivePath, destDir);
-            if (CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi))
-                goto wait;
-        }
-        return FALSE;
-    }
-wait:
-    WaitForSingleObject(pi.hProcess, 60000);
-    DWORD exitCode = 1;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    return exitCode == 0;
-}
-
 static BOOL UnzipShell(LPCWSTR zipPath, LPCWSTR destDir)
 {
     IShellDispatch* pShell = NULL;
@@ -322,7 +287,7 @@ static BOOL CheckForUpdate(WCHAR* latestTag, int tagBufLen, WCHAR* zipUrl, int u
         int len = (int)(end - p);
         strncpy(urlA, p, min(len, (int)sizeof(urlA) - 1));
 
-        if (strstr(urlA, ".zip") || strstr(urlA, ".7z"))
+        if (strstr(urlA, ".zip"))
         {
             MultiByteToWideChar(CP_UTF8, 0, urlA, -1, zipUrl, urlBufLen);
             break;
@@ -355,10 +320,9 @@ static void RunUpdate(LPCWSTR gameDir, LPCWSTR zipUrl)
     }
 
     // Download archive to temp
-    BOOL bIs7z = (wcsstr(zipUrl, L".7z") != NULL);
     WCHAR tempDir[MAX_PATH], zipPath[MAX_PATH], extractDir[MAX_PATH];
     GetTempPathW(MAX_PATH, tempDir);
-    PathCombineW(zipPath,    tempDir, bIs7z ? L"OpenOL_update.7z" : L"OpenOL_update.zip");
+    PathCombineW(zipPath,    tempDir, L"OpenOL_update.zip");
     PathCombineW(extractDir, tempDir, L"OpenOL_extract");
 
     // Clean previous temp
@@ -372,10 +336,9 @@ static void RunUpdate(LPCWSTR gameDir, LPCWSTR zipUrl)
         return;
     }
 
-    BOOL extractOk = bIs7z ? Extract7z(zipPath, extractDir) : UnzipShell(zipPath, extractDir);
-    if (!extractOk)
+    if (!UnzipShell(zipPath, extractDir))
     {
-        ShowMsg(L"OpenOL Update", L"Failed to extract update.\n7-Zip must be installed for .7z archives.", MB_OK | MB_ICONERROR);
+        ShowMsg(L"OpenOL Update", L"Failed to extract update.", MB_OK | MB_ICONERROR);
         return;
     }
 

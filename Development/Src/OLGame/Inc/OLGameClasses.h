@@ -3059,7 +3059,7 @@ public:
         P_FINISH;
         this->SetFXForEnemyPawn(EnemyPawn);
     }
-    DECLARE_CLASS(UOLFXManager,UObject,0,OLGame)
+    DECLARE_CLASS(UOLFXManager,UObject,0|CLASS_Config,OLGame)
     static const TCHAR* StaticConfigName() {return TEXT("Game");}
 
 	void Init();
