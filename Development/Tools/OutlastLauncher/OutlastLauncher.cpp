@@ -4,7 +4,7 @@
 #include "OutlastLauncher.h"
 
 // ---- Version ---------------------------------------------------------------
-#define CURRENT_VERSION   L"2.0.5"
+#define CURRENT_VERSION   L"2.1.0"
 #define GITHUB_OWNER      L"ShyKiss"
 #define GITHUB_REPO       L"OpenOL"
 
