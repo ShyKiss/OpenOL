@@ -10,6 +10,13 @@ static AOLHidingSpot* GLastActiveLocker = NULL;
 // "local door" events as a real action. Without this the packet echoes between clients.
 static UBOOL GApplyingRemoteDoor = FALSE;
 
+// The tracked actors die with the world.
+void DoorChannel_ResetSession()
+{
+    GLastLockedDoor   = NULL;
+    GLastActiveLocker = NULL;
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================

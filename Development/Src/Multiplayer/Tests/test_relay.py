@@ -408,6 +408,71 @@ class RelayTest(unittest.TestCase):
             a.send(P["CH_SESS"], P["SESS_CHECKPOINT"], body)
         self.assert_alive(a)
 
+    def fire(self, client, path, max_count):
+        client.send(P["CH_WORLD"], P["WORLD_TRIGGER_FIRE"], bytes([max_count]) + wstr(path))
+
+    def test_one_shot_trigger_fires_once(self):
+        a, b = self.client(), self.client()
+        is_fire = lambda d: d[:2] == bytes([P["CH_WORLD"], P["WORLD_TRIGGER_FIRE"]])
+        self.fire(a, "Map.Touch_1", 1)
+        self.fire(b, "Map.Touch_1", 1)
+        got_a = [d for d in a.recv_all(0.2) if is_fire(d)]
+        got_b = b.recv_all(0.2)
+        self.assertEqual(len(got_a), 1, "the instigator hears its own commit once")
+        self.assertEqual(struct.unpack_from("<I", got_a[0], 2)[0], a.player_id)
+        self.assertEqual(len([d for d in got_b if is_fire(d)]), 1)
+        denied = [d for d in got_b if d[:2] == bytes([P["CH_WORLD"], P["WORLD_TRIGGER_DENIED"]])]
+        self.assertEqual(len(denied), 1)
+        self.assertEqual(denied[0][6:], wstr("Map.Touch_1"))
+
+    def test_multi_use_trigger_respects_limit(self):
+        a = self.client()
+        is_fire = lambda d: d[:2] == bytes([P["CH_WORLD"], P["WORLD_TRIGGER_FIRE"]])
+        for _ in range(4):
+            self.fire(a, "Map.Touch_2", 2)
+        self.assertEqual(len([d for d in a.recv_all(0.2) if is_fire(d)]), 2)
+
+    def test_repeatable_trigger_dedupes_only_inside_window(self):
+        a, b = self.client(), self.client()
+        is_fire = lambda d: d[:2] == bytes([P["CH_WORLD"], P["WORLD_TRIGGER_FIRE"]])
+        self.fire(a, "Map.Touch_3", 0)
+        self.fire(b, "Map.Touch_3", 0)
+        self.assertEqual(len([d for d in a.recv_all(0.1) if is_fire(d)]), 1)
+        time.sleep(0.3)
+        self.fire(b, "Map.Touch_3", 0)
+        self.assertEqual(len([d for d in a.recv_all(0.1) if is_fire(d)]), 1)
+
+    def test_new_world_forgets_triggers(self):
+        a = self.client()
+        is_fire = lambda d: d[:2] == bytes([P["CH_WORLD"], P["WORLD_TRIGGER_FIRE"]])
+        self.fire(a, "Map.Touch_4", 1)
+        self.assertEqual(len([d for d in a.recv_all(0.1) if is_fire(d)]), 1)
+        a.enter(cp="CP_A", persist="MapA", epoch=1, reset=True)
+        a.wait_for(sess("SESS_BASELINE_END"))
+        self.fire(a, "Map.Touch_4", 1)
+        self.assertEqual(len([d for d in a.recv_all(0.1) if is_fire(d)]), 1)
+
+    def test_trigger_needs_world_and_valid_packet(self):
+        a = self.client(enter=False)
+        self.fire(a, "Map.Touch_5", 1)
+        self.assertFalse([d for d in a.recv_all(0.1) if d[0] == P["CH_WORLD"]])
+        b = self.client()
+        for body in (b"", b"\x01", b"\x01\x00", b"\x01\x05ab", b"\x01\xff"):
+            b.send(P["CH_WORLD"], P["WORLD_TRIGGER_FIRE"], body)
+        self.assert_alive(b)
+
+    def test_respawn_releases_own_door(self):
+        a, b = self.client(), self.client()
+        key = struct.pack("<iii", 8, 8, 8) + b"\0" * 8
+        a.send(P["CH_DOOR"], P["DOOR_LOCK"], key)
+        b.wait_for(lambda d: d[:2] == bytes([P["CH_DOOR"], P["DOOR_LOCK"]]))
+        a.enter(epoch=1)
+        msgs = a.recv_all(0.2)
+        self.assertFalse([d for d in msgs if d[:2] == bytes([P["CH_DOOR"], P["DOOR_LOCK"]])],
+                         "own lock must not be replayed")
+        b.send(P["CH_DOOR"], P["DOOR_LOCK"], key)
+        self.assertFalse([d for d in b.recv_all(0.2) if d[0] == P["SRV_DOOR_DENY"]])
+
     def test_transport_unit(self):
         exe = os.path.join(self.build_dir, "test_transport")
         subprocess.check_call(["cc", "-std=c11", "-g", "-O1", "-fsanitize=address,undefined",

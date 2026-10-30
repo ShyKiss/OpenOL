@@ -5323,7 +5323,12 @@ UBOOL USeqEvent_Touch::CheckTouchActivate(AActor *InOriginator, AActor *InInstig
 	{
 		if (!bTest)
 		{
-			DoTouchActivation(InOriginator,InInstigator);
+			// In multiplayer the server decides whether a player's touch fires the event.
+			extern UBOOL MpWorld_InterceptTouch(USeqEvent_Touch*, AActor*, AActor*);
+			if (!MpWorld_InterceptTouch(this, InOriginator, InInstigator))
+			{
+				DoTouchActivation(InOriginator,InInstigator);
+			}
 		}
 		return TRUE;
 	}

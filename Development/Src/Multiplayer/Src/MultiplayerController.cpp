@@ -168,6 +168,8 @@ static void HandleSessionPacket(AMultiplayerController* Controller, BYTE Type, B
             debugf(NAME_Log, TEXT("[MP] In world: cp='%s' persist='%s' epoch=%d"), *Checkpoint, *Persist, (INT)GMpConn.WorldEpoch);
             break;
         }
+        extern void DoorChannel_ResetSession();
+        DoorChannel_ResetSession();
         GMpConn.TravelCheckpoint = Checkpoint;
         GMpConn.TravelPersist    = Persist;
         GMpConn.bTravelPending   = TRUE;
@@ -254,6 +256,8 @@ void AMultiplayerController::NativeDestroyed()
         GMpConn.SendBinary(B, 2);
     }
     GMpConn.WorldEpoch = 0;
+    extern void DoorChannel_ResetSession();
+    DoorChannel_ResetSession();
     GMultiplayerController            = NULL;
     GMultiplayerHero                  = NULL;
     GHeroChannelTicker.Channel        = NULL;

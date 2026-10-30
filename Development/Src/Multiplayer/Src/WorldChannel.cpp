@@ -129,36 +129,63 @@ static UBOOL IsKismetChainPlaying(USequenceOp* Op, int Depth)
     return FALSE;
 }
 
-static void ApplyRemoteTriggerAct(AMultiplayerController* Ctrl, const FString& EventPath, INT RemoteTriggerCount)
+// Fires the chain as an observer: visuals and scripted state, no gameplay side effects.
+static void ApplyRemoteTrigger(AMultiplayerController* Ctrl, USeqEvent_Touch* TouchEvent)
 {
-    // Check blacklist
-    for (INT i = 0; i < Ctrl->TriggerActBlacklist.Num(); i++)
-    {
-        const FString& Filter = Ctrl->TriggerActBlacklist(i);
-        if (Filter.Len() > 0 && EventPath.ToUpper().InStr(Filter.ToUpper()) != -1)
-            return;
-    }
-
-    USeqEvent_Touch* TouchEvent = Cast<USeqEvent_Touch>(
-        UObject::StaticFindObject(USeqEvent_Touch::StaticClass(), NULL, *EventPath, FALSE));
-    if (!TouchEvent || !TouchEvent->bEnabled) return;
-
-    if (RemoteTriggerCount > TouchEvent->TriggerCount)
-        TouchEvent->TriggerCount = RemoteTriggerCount;
+    if (!TouchEvent->bEnabled) return;
 
     if (TouchEvent->MaxTriggerCount > 0 && TouchEvent->TriggerCount >= TouchEvent->MaxTriggerCount)
         return;
 
-    // For repeatable triggers (MaxTriggerCount=0), suppress duplicate activations
-    // when the Kismet chain is already playing — e.g. two players touched the same
-    // trigger at the same time and both packets arrived before the chain finished.
+    // Repeatable triggers: the chain may still be playing from an earlier activation.
     if (TouchEvent->MaxTriggerCount == 0 && IsKismetChainPlaying(TouchEvent, 0))
         return;
 
-    // ForceActivateTouchEvent is on AOLPlayerController
     AOLPlayerController* OLPC = Cast<AOLPlayerController>(Ctrl);
     if (OLPC)
         OLPC->ForceActivateTouchEvent(TouchEvent);
+}
+
+static USeqEvent_Touch* FindTouchEvent(const FString& EventPath)
+{
+    return Cast<USeqEvent_Touch>(
+        UObject::StaticFindObject(USeqEvent_Touch::StaticClass(), NULL, *EventPath, FALSE));
+}
+
+// Set while activating an event the server has already accepted.
+static UBOOL GApplyingTriggerCommit = FALSE;
+
+// Called from USeqEvent_Touch::CheckTouchActivate. TRUE means the server decides: the
+// event fires when WORLD_TRIGGER_FIRE comes back, so all players see one activation.
+UBOOL MpWorld_InterceptTouch(USeqEvent_Touch* TouchEvent, AActor* Originator, AActor* Instigator)
+{
+    AMultiplayerController* Ctrl = GMultiplayerController;
+    if (GApplyingTriggerCommit || !Ctrl || !Instigator || Instigator != GMultiplayerHero)
+        return FALSE;
+    if (!CanWorldSend() || GMpConn.WorldEpoch == 0 || !GMpConn.SyncMatinees)
+        return FALSE;
+
+    if (Originator)
+    {
+        const FString OriginatorPath = Originator->GetPathName().ToUpper();
+        for (INT i = 0; i < Ctrl->TriggerActBlacklist.Num(); i++)
+        {
+            const FString& Filter = Ctrl->TriggerActBlacklist(i);
+            if (Filter.Len() > 0 && OriginatorPath.InStr(Filter.ToUpper()) != -1)
+                return FALSE;
+        }
+    }
+
+    BYTE Utf8[252];
+    const INT Utf8Len = TCHARToUTF8(Utf8, sizeof(Utf8), *TouchEvent->GetPathName());
+    BYTE B[4 + 252];
+    B[0] = CH_WORLD;
+    B[1] = WORLD_TRIGGER_FIRE;
+    B[2] = (BYTE)Clamp<INT>(TouchEvent->MaxTriggerCount, 0, 255);
+    B[3] = (BYTE)Utf8Len;
+    appMemcpy(B + 4, Utf8, Utf8Len);
+    GMpConn.SendBinary(B, 4 + Utf8Len);
+    return TRUE;
 }
 
 // ============================================================================
@@ -259,29 +286,7 @@ void UWorldChannel::SendRecordingMarker(AOLRecordingMarker* Marker)
 
 void UWorldChannel::OnPawnTouchedTrigger(AActor* TriggerActor)
 {
-    if (!TriggerActor || !CanWorldSend()) return;
-    if (!GMpConn.SyncMatinees) return;
-
-    FString Path = TriggerActor->GetPathName();
-
-    // Check blacklist
-    for (INT i = 0; i < ControllerOwner->TriggerActBlacklist.Num(); i++)
-    {
-        const FString& Filter = ControllerOwner->TriggerActBlacklist(i);
-        if (Filter.Len() > 0 && Path.ToUpper().InStr(Filter.ToUpper()) != -1)
-            return;
-    }
-
-    for (INT i = 0; i < TriggerActor->GeneratedEvents.Num(); i++)
-    {
-        USeqEvent_Touch* TouchEvent = Cast<USeqEvent_Touch>(TriggerActor->GeneratedEvents(i));
-        if (TouchEvent && TouchEvent->bEnabled)
-        {
-            FString EventPath = TouchEvent->GetPathName();
-            //debugf(TEXT("[MP] Trigger: %s"), *Path);
-            SendWorldIntString(CH_WORLD, WORLD_TRIGGER_ACT, TouchEvent->TriggerCount, EventPath);
-        }
-    }
+    // Requests now go out from MpWorld_InterceptTouch. Still called from OLPawn.uc.
 }
 
 // ============================================================================
@@ -374,12 +379,34 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
     FString Str;
     switch (PktType)
     {
-    case WORLD_TRIGGER_ACT:
-        if (DataLen >= 5 && GMpConn.SyncMatinees)
+    case WORLD_TRIGGER_FIRE:
+        if (DataLen >= 3 && ReadWorldString(Data, DataLen, 1, Str))
         {
-            INT Count = (INT)(Data[0] | (Data[1] << 8) | (Data[2] << 16) | (Data[3] << 24));
-            if (ReadWorldString(Data, DataLen, 4, Str))
-                ApplyRemoteTriggerAct(ControllerOwner, Str, Count);
+            USeqEvent_Touch* TouchEvent = FindTouchEvent(Str);
+            if (!TouchEvent) break;
+            if (SenderID != GMpConn.LocalPlayerID)
+            {
+                ApplyRemoteTrigger(ControllerOwner, TouchEvent);
+                break;
+            }
+            // Our own request was accepted: this is the real activation.
+            if (GMultiplayerHero)
+            {
+                GApplyingTriggerCommit = TRUE;
+                TouchEvent->CheckTouchActivate(TouchEvent->Originator, GMultiplayerHero, FALSE);
+                GApplyingTriggerCommit = FALSE;
+            }
+        }
+        break;
+
+    case WORLD_TRIGGER_DENIED:
+        if (ReadWorldString(Data, DataLen, 0, Str))
+        {
+            // The world already fired it. If our Kismet does not know that (we reloaded a
+            // checkpoint or joined later), catch up, otherwise the script would stay stuck.
+            USeqEvent_Touch* TouchEvent = FindTouchEvent(Str);
+            if (TouchEvent && TouchEvent->MaxTriggerCount > 0)
+                ApplyRemoteTrigger(ControllerOwner, TouchEvent);
         }
         break;
 
