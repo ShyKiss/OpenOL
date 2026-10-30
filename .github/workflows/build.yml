@@ -17,6 +17,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          submodules: true
 
       - name: Download OutlastSrc
         run: wget "${{ secrets.OUTLASTSRC }}"

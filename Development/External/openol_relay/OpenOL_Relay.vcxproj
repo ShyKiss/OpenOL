@@ -30,7 +30,7 @@
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <ExceptionHandling>false</ExceptionHandling>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\..\Src\Multiplayer\server\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;_WINDOWS;_WINSOCK_DEPRECATED_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;OPENOL_EMBEDDED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <!-- C4127: conditional expression is constant (relay packet macros) -->
@@ -47,15 +47,15 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="include\relay_compat.h" />
-    <ClInclude Include="include\db.h" />
-    <ClInclude Include="include\server.h" />
-    <ClInclude Include="include\openol_protocol.h" />
+    <ClInclude Include="..\..\Src\Multiplayer\server\src\relay_compat.h" />
+    <ClInclude Include="..\..\Src\Multiplayer\server\src\db.h" />
+    <ClInclude Include="..\..\Src\Multiplayer\server\src\server.h" />
+    <ClInclude Include="..\..\Src\Multiplayer\server\src\openol_protocol.h" />
     <ClInclude Include="include\openol_relay.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\db.c" />
-    <ClCompile Include="src\server.c" />
+    <ClCompile Include="..\..\Src\Multiplayer\server\src\db.c" />
+    <ClCompile Include="..\..\Src\Multiplayer\server\src\server.c" />
     <ClCompile Include="src\relay_api.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

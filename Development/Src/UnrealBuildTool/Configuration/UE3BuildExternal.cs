@@ -623,6 +623,7 @@ namespace UnrealBuildTool
 				&& File.Exists("../External/openol_relay/lib/openol_relay.lib"))
 			{
 				GlobalCPPEnvironment.SystemIncludePaths.Add("../External/openol_relay/include");
+				GlobalCPPEnvironment.SystemIncludePaths.Add("Multiplayer/server/src");
 				FinalLinkEnvironment.AdditionalLibraries.Add("openol_relay.lib");
 				FinalLinkEnvironment.LibraryPaths.Add("../External/openol_relay/lib");
 			}

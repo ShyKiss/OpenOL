@@ -6,7 +6,6 @@ UDP. Requires cmake, ninja and a C/C++ compiler.
 
     python3 Tests/test_relay.py [-v]
 """
-import filecmp
 import os
 import random
 import re
@@ -21,22 +20,15 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MP = os.path.dirname(HERE)
-DEV = os.path.dirname(os.path.dirname(MP))
 SERVER_SRC = os.path.join(MP, "server", "src")
-RELAY_DIR = os.path.join(DEV, "External", "openol_relay")
 
-SHARED_FILES = {
-    "server.c": "src", "db.c": "src",
-    "server.h": "include", "db.h": "include",
-    "relay_compat.h": "include", "openol_protocol.h": "include",
-}
 PORT = 27790
 ROOM = "PUBLIC"
 
 
 def load_protocol():
     ids = {}
-    with open(os.path.join(RELAY_DIR, "include", "openol_protocol.h"), encoding="utf-8") as f:
+    with open(os.path.join(SERVER_SRC, "openol_protocol.h"), encoding="utf-8") as f:
         for name, value in re.findall(r"^#define (\w+)\s+(0x[0-9A-Fa-f]+|\d+)", f.read(), re.M):
             ids[name] = int(value, 0)
     return ids
@@ -138,14 +130,8 @@ class RelayTest(unittest.TestCase):
         client.send(P["CH_SRV"], P["SRV_PING"], b"\x01\x02\x03\x04")
         client.wait_for(lambda d: d[0] == P["CH_SRV"] and d[1] == P["SRV_PING"])
 
-    def test_shared_sources_identical(self):
-        for name, sub in SHARED_FILES.items():
-            self.assertTrue(filecmp.cmp(os.path.join(SERVER_SRC, name),
-                                        os.path.join(RELAY_DIR, sub, name), shallow=False),
-                            name + " differs between the embedded and standalone relay")
-
     def test_password_never_logged(self):
-        with open(os.path.join(RELAY_DIR, "src", "server.c"), encoding="utf-8") as f:
+        with open(os.path.join(SERVER_SRC, "server.c"), encoding="utf-8") as f:
             for line in f:
                 if "server_log" in line or "history_push" in line:
                     self.assertNotIn("password", line)
