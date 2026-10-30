@@ -307,9 +307,12 @@ void UWorldChannel::SendPickupKismet(AOLPickableObject* Pickup)
 // Send — inventory item consumed
 // ============================================================================
 
+// Set while applying a consume from the network: it fires the same event as a local one.
+static UBOOL GApplyingRemoteConsume = FALSE;
+
 void UWorldChannel::SendItemConsume(FName ItemName)
 {
-    if (!CanWorldSend()) return;
+    if (!CanWorldSend() || GApplyingRemoteConsume) return;
     if (!GMpConn.SyncInteractable) return;
 
     SendWorldString(CH_WORLD, WORLD_ITEM_CONSUME, ItemName.ToString());
@@ -355,7 +358,7 @@ void UWorldChannel::SendMatineeState()
         Count++;
     }
 
-    if (Count == 0) return;  // nothing playing — no need to send
+    // Count 0 tells the server to forget the previous state.
     B[CountOffset] = Count;
     GMpConn.SendBinary(B, N);
 }
@@ -554,7 +557,11 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         {
             AOLHero* Hero = Cast<AOLHero>(ControllerOwner->Pawn);
             if (Hero && Hero->OLPC && Hero->OLPC->InventoryManager)
+            {
+                GApplyingRemoteConsume = TRUE;
                 Hero->OLPC->InventoryManager->ConsumeItem(FName(*Str));
+                GApplyingRemoteConsume = FALSE;
+            }
         }
         break;
 
@@ -604,7 +611,7 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         break;
 
     case WORLD_MATINEE_STATE:
-        if (DataLen >= 1 && GMpConn.SyncMatinees && GWorld && GWorld->GetGameSequence())
+        if (DataLen >= 1 && GMpConn.bInBaseline && GMpConn.SyncMatinees && GWorld && GWorld->GetGameSequence())
         {
             INT o = 0;
             BYTE Count = Data[o++];

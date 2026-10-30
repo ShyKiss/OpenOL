@@ -166,6 +166,7 @@ static void HandleSessionPacket(AMultiplayerController* Controller, BYTE Type, B
         if (Type == SESS_WORLD)
         {
             debugf(NAME_Log, TEXT("[MP] In world: cp='%s' persist='%s' epoch=%d"), *Checkpoint, *Persist, (INT)GMpConn.WorldEpoch);
+            GMpConn.bInBaseline = TRUE;
             break;
         }
         extern void DoorChannel_ResetSession();
@@ -178,6 +179,7 @@ static void HandleSessionPacket(AMultiplayerController* Controller, BYTE Type, B
     }
     case SESS_BASELINE_END:
         debugf(NAME_Log, TEXT("[MP] Baseline received"));
+        GMpConn.bInBaseline = FALSE;
         break;
     case SESS_PLAYER_LEFT:
         if (PayloadLen >= 4)

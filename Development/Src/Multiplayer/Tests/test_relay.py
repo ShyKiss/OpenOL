@@ -479,6 +479,29 @@ class RelayTest(unittest.TestCase):
         got = b.wait_for(lambda d: d[0] == P["CH_WORLD"] and d[1] in (P["WORLD_CLAIM"], P["WORLD_CLAIM_DENIED"]))
         self.assertEqual(got[1], P["WORLD_CLAIM"])
 
+    def test_matinee_state_only_reaches_joiners(self):
+        a, b = self.client(), self.client()
+        state = bytes([1]) + wstr("Map.Interp") + struct.pack("<ff", 2.5, 1.0)
+        a.send(P["CH_WORLD"], P["WORLD_MATINEE_STATE"], state)
+        is_matinee = lambda d: d[:2] == bytes([P["CH_WORLD"], P["WORLD_MATINEE_STATE"]])
+        self.assertFalse([d for d in b.recv_all(0.1) if is_matinee(d)], "no live relay")
+        b.enter(epoch=1)
+        self.assertEqual(len([d for d in b.recv_all(0.2) if is_matinee(d)]), 1)
+        a.send(P["CH_WORLD"], P["WORLD_MATINEE_STATE"], bytes([0]))
+        time.sleep(0.05)
+        b.enter(epoch=1)
+        self.assertFalse([d for d in b.recv_all(0.2) if is_matinee(d)], "finished matinee is forgotten")
+
+    def test_consumed_item_replays_after_its_pickup(self):
+        a = self.client()
+        a.send(P["CH_WORLD"], P["WORLD_PICKUP_STATE"], struct.pack("<iii", 4, 4, 4))
+        a.send(P["CH_WORLD"], P["WORLD_ITEM_CONSUME"], wstr("Key"))
+        time.sleep(0.05)
+        b = self.client(enter=False)
+        b.enter()
+        types = [d[1] for d in b.recv_all(0.2) if d[0] == P["CH_WORLD"]]
+        self.assertEqual(types, [P["WORLD_PICKUP_STATE"], P["WORLD_ITEM_CONSUME"]])
+
     def test_claim_kinds_do_not_collide(self):
         a = self.client()
         self.claim(a, P["CLAIM_CSA"], "Map.X", 1)
