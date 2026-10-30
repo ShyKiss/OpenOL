@@ -19,11 +19,12 @@ static INT ReadStr(const BYTE* Data, INT Off, INT DataLen, FString& OutStr)
 {
     INT Len = 0;
     Off = ReadU8(Data, Off, Len);
-    TCHAR Buf[65];
-    INT   i;
-    for (i = 0; i < Len && i < 64 && Off < DataLen; i++, Off++)
-        Buf[i] = (TCHAR)Data[Off];
-    Buf[i] = 0;
+    TCHAR Buf[256];
+    INT   Stored = 0;
+    for (INT i = 0; i < Len && Off < DataLen; i++, Off++)
+        if (Stored < 255)
+            Buf[Stored++] = (TCHAR)Data[Off];
+    Buf[Stored] = 0;
     OutStr = FString(Buf);
     return Off;
 }
@@ -84,6 +85,14 @@ static void CallSetNetEnvironment(AOLEnemyPawn* E, INT Env)                 { E-
 static void CallPlayNetSMT(AOLEnemyPawn* E, INT S, INT P1, INT P2)         { E->NativePlayNetSMT(S, P1, P2); }
 static INT  CallGetDoorSMTFlags(AOLEnemyPawn* E)                            { return E->NativeGetDoorSMTFlags(); }
 
+// Last animation sent per enemy name, see "Animation replication" below.
+struct FSentEnemyAnim
+{
+    FString Key;     // slot|animset|anim, empty when nothing is playing
+    FLOAT   LastPos;
+};
+static TMap<FString, FSentEnemyAnim> GSentEnemyAnims;
+
 // ============================================================================
 // Enemy AI authority
 // ============================================================================
@@ -120,6 +129,7 @@ static void DestroyLocalEnemies(AMultiplayerController* Ctrl)
     Ctrl->LastEnemySMT.Empty();
     Ctrl->LastBashLoopSentTime.Empty();
     Ctrl->SentEnemySpawns.Empty();
+    GSentEnemyAnims.Empty();
 }
 
 // Turns what this client sees into enemies it simulates. The behavior tree starts over,
@@ -179,6 +189,163 @@ void EnemyChannel_OnSimOwnerChanged(AMultiplayerController* Ctrl, INT NewOwner)
             Ctrl->RemoteEnemies.Remove(j, 1);
         }
     }
+}
+
+// ============================================================================
+// Animation replication
+//
+// The owner reads what actually plays on the mesh, whatever started it: a matinee,
+// Kismet, the behavior tree or a special move. New cases need no new packets.
+// ============================================================================
+
+void EnemyChannel_ResetSession()
+{
+    GSentEnemyAnims.Empty();
+}
+
+// A matinee drives its slot directly and wins over any custom animation.
+static UAnimNodeSequence* FindPlayingAnim(AOLEnemyPawn* E, UAnimNodeSlot*& OutSlot)
+{
+    OutSlot = NULL;
+    if (!E->Mesh) return NULL;
+    UAnimNodeSequence* Custom = NULL;
+    UAnimNodeSlot* CustomSlot = NULL;
+    for (INT i = 0; i < E->Mesh->AnimTickArray.Num(); i++)
+    {
+        UAnimNodeSlot* Slot = Cast<UAnimNodeSlot>(E->Mesh->AnimTickArray(i));
+        if (!Slot) continue;
+        if (Slot->bIsBeingUsedByInterpGroup)
+        {
+            for (INT c = 1; c < Slot->Children.Num(); c++)
+            {
+                UAnimNodeSequence* Seq = Cast<UAnimNodeSequence>(Slot->Children(c).Anim);
+                if (Seq && Seq->AnimSeqName != NAME_None)
+                {
+                    OutSlot = Slot;
+                    return Seq;
+                }
+            }
+        }
+        else if (!Custom && Slot->bIsPlayingCustomAnim)
+        {
+            UAnimNodeSequence* Seq = Slot->GetCustomAnimNodeSeq();
+            if (Seq && Seq->AnimSeqName != NAME_None)
+            {
+                Custom = Seq;
+                CustomSlot = Slot;
+            }
+        }
+    }
+    OutSlot = CustomSlot;
+    return Custom;
+}
+
+static void SendEnemyAnim(AOLEnemyPawn* E)
+{
+    UAnimNodeSlot* Slot = NULL;
+    UAnimNodeSequence* Seq = FindPlayingAnim(E, Slot);
+
+    const FString EName = E->GetName();
+    FSentEnemyAnim* Sent = GSentEnemyAnims.Find(EName);
+
+    FString Key, SlotName, SetPath, AnimName;
+    if (Seq)
+    {
+        SlotName = Slot->NodeName.ToString();
+        AnimName = Seq->AnimSeqName.ToString();
+        if (Seq->AnimSeq && Seq->AnimSeq->GetOuter())
+            SetPath = Seq->AnimSeq->GetOuter()->GetPathName();
+        Key = SlotName + TEXT("|") + SetPath + TEXT("|") + AnimName;
+    }
+
+    // Time going backwards on a one-shot means the same animation started again.
+    const FLOAT Pos = Seq ? Seq->CurrentTime : 0.f;
+    const UBOOL bRestarted = Seq && Sent && !Seq->bLooping && Pos + 0.05f < Sent->LastPos;
+    if (Sent)
+        Sent->LastPos = Pos;
+    if (Sent ? (Sent->Key == Key && !bRestarted) : Key.Len() == 0)
+        return;
+
+    FString StopSlot;
+    if (Key.Len() == 0 && Sent)
+        Sent->Key.Split(TEXT("|"), &StopSlot, NULL);
+
+    FSentEnemyAnim NewSent;
+    NewSent.Key = Key;
+    NewSent.LastPos = Pos;
+    GSentEnemyAnims.Set(*EName, NewSent);
+
+    BYTE B[512];
+    INT  N = 0;
+    N = PutU8 (B, N, CH_ENEMY);
+    N = PutU8 (B, N, ENEMY_ANIM);
+    N = PutStr(B, N, EName);
+    if (Seq)
+    {
+        N = PutU8 (B, N, Seq->bLooping ? ENEMY_ANIM_LOOP : 0);
+        N = PutStr(B, N, SlotName);
+        N = PutStr(B, N, SetPath, 127);
+        N = PutStr(B, N, AnimName);
+        N = PutF32(B, N, Pos);
+        // A matinee moves the node by hand and may leave its rate at zero.
+        N = PutF32(B, N, Seq->bPlaying && Seq->Rate > 0.f ? Seq->Rate : 1.f);
+    }
+    else
+    {
+        N = PutU8 (B, N, ENEMY_ANIM_STOP);
+        N = PutStr(B, N, StopSlot);
+    }
+    GMpConn.SendBinary(B, N);
+}
+
+static void ApplyEnemyAnim(AOLEnemyPawn* Dummy, BYTE* Data, INT DataLen, INT Off)
+{
+    if (!Dummy->Mesh || Off >= DataLen) return;
+
+    INT Flags = 0;
+    FString SlotName, SetPath, AnimName;
+    Off = ReadU8(Data, Off, Flags);
+    Off = ReadStr(Data, Off, DataLen, SlotName);
+
+    UAnimNodeSlot* Slot = SlotName.Len() > 0 ? Cast<UAnimNodeSlot>(Dummy->Mesh->FindAnimNode(FName(*SlotName))) : NULL;
+    if (!Slot)
+        Slot = Dummy->FullBodyAnimSlot;
+    if (!Slot) return;
+
+    if (Flags & ENEMY_ANIM_STOP)
+    {
+        if (Slot->bIsPlayingCustomAnim)
+            Slot->StopCustomAnim(0.2f);
+        if (Slot == Dummy->FullBodyAnimSlot)
+            Dummy->bIsAnimatingFullBody = FALSE;
+        return;
+    }
+
+    Off = ReadStr(Data, Off, DataLen, SetPath);
+    Off = ReadStr(Data, Off, DataLen, AnimName);
+    if (Off + 8 > DataLen || AnimName.Len() == 0) return;
+    FLOAT Pos = 0.f, Rate = 1.f;
+    Off = ReadF32(Data, Off, Pos);
+    Off = ReadF32(Data, Off, Rate);
+
+    if (SetPath.Len() > 0)
+    {
+        UAnimSet* AnimSet = LoadObject<UAnimSet>(NULL, *SetPath, NULL, LOAD_None, NULL);
+        if (AnimSet && Dummy->Mesh->AnimSets.FindItemIndex(AnimSet) == INDEX_NONE)
+        {
+            Dummy->Mesh->AnimSets.AddItem(AnimSet);
+            Dummy->Mesh->UpdateAnimations();
+        }
+    }
+
+    const FName Anim(*AnimName);
+    Slot->PlayCustomAnim(Anim, Rate, 0.2f, 0.2f, (Flags & ENEMY_ANIM_LOOP) != 0, TRUE);
+    UAnimNodeSequence* Seq = Slot->GetCustomAnimNodeSeq();
+    // Skips the start for a late joiner, and a special move already started this anim.
+    if (Seq && Pos > 0.05f)
+        Seq->SetPosition(Pos, FALSE);
+    if (Slot == Dummy->FullBodyAnimSlot)
+        Dummy->bIsAnimatingFullBody = TRUE;
 }
 
 // ============================================================================
@@ -530,6 +697,7 @@ void UEnemyChannel::TickSend(FLOAT DeltaTime)
             if (bSendLoc)
                 SendEnemyLocBinary(E, EnvIdx, BotLookAt, bLookActive, BotFlags);
             SendSMT(E, i);
+            SendEnemyAnim(E);
         }
         else if (ControllerOwner->LastEnemyAlive(i))
         {
@@ -626,7 +794,9 @@ static void ApplySpawn(UEnemyChannel* Ch, INT SenderID,
             NetEnemy->Tag = FName(TEXT("MultiplayerDummyEnemy"));
             if (NetEnemy->Controller)
                 GWorld->DestroyActor(NetEnemy->Controller);
-            NetEnemy->SetCollision(FALSE, FALSE, FALSE);
+            // Blocks the local hero like a real enemy; doors swing through it, and
+            // bCollideWorld stays off because the position comes from the network.
+            NetEnemy->SetCollision(TRUE, TRUE, TRUE);
             NetEnemy->bCollideWorld = FALSE;
             NetEnemy->Physics = PHYS_None;
 
@@ -987,6 +1157,20 @@ void UEnemyChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT D
                     }
                     break;
                 }
+            }
+        }
+        break;
+    }
+    case ENEMY_ANIM:
+    {
+        Off = ReadStr(Data, Off, DataLen, EnemyName);
+        for (INT j = 0; j < ControllerOwner->RemoteEnemies.Num(); j++)
+        {
+            FRemoteEnemyState& RS = ControllerOwner->RemoteEnemies(j);
+            if (RS.NetName == EnemyName && RS.OwnerID == SenderID && RS.DummyEnemy)
+            {
+                ApplyEnemyAnim(RS.DummyEnemy, Data, DataLen, Off);
+                break;
             }
         }
         break;

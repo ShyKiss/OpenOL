@@ -170,7 +170,9 @@ static void HandleSessionPacket(AMultiplayerController* Controller, BYTE Type, B
             break;
         }
         extern void DoorChannel_ResetSession();
+        extern void EnemyChannel_ResetSession();
         DoorChannel_ResetSession();
+        EnemyChannel_ResetSession();
         GMpConn.TravelCheckpoint = Checkpoint;
         GMpConn.TravelPersist    = Persist;
         GMpConn.bTravelPending   = TRUE;
@@ -267,7 +269,9 @@ void AMultiplayerController::NativeDestroyed()
     }
     GMpConn.WorldEpoch = 0;
     extern void DoorChannel_ResetSession();
+    extern void EnemyChannel_ResetSession();
     DoorChannel_ResetSession();
+    EnemyChannel_ResetSession();
     GMultiplayerController            = NULL;
     GMultiplayerHero                  = NULL;
     GHeroChannelTicker.Channel        = NULL;

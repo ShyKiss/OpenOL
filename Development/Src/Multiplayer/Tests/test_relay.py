@@ -571,6 +571,27 @@ class RelayTest(unittest.TestCase):
         a.enter(cp="CP_B", persist="MapB", epoch=2)
         self.assertEqual(self.owner_of(a), a.player_id)
 
+    def test_enemy_anim_is_relayed_and_snapshotted(self):
+        a, b = self.client(), self.client()
+        name = b"Enemy_3"
+        is_anim = lambda d: d[:2] == bytes([P["CH_ENEMY"], P["ENEMY_ANIM"]])
+        a.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(name, b"S" * 20))
+        play = bytes([0]) + wstr("FullBodySlot") + wstr("Pkg.Set") + wstr("Attack") + struct.pack("<ff", 1.5, 1.0)
+        a.send(P["CH_ENEMY"], P["ENEMY_ANIM"], enemy(name, play))
+        b.wait_for(is_anim)
+        time.sleep(0.05)
+        c = self.client(enter=False)
+        c.enter()
+        got = [d for d in c.recv_all(0.2) if d[0] == P["CH_ENEMY"]]
+        self.assertEqual([d[1] for d in got], [P["ENEMY_SPAWN"], P["ENEMY_ANIM"]], "a joiner sees the animation in progress")
+        stop = bytes([P["ENEMY_ANIM_STOP"]]) + wstr("FullBodySlot")
+        a.send(P["CH_ENEMY"], P["ENEMY_ANIM"], enemy(name, stop))
+        b.wait_for(is_anim)
+        c.recv_all(0.1)  # c is in the world too and hears the stop live
+        c.enter(epoch=1)
+        got = [d for d in c.recv_all(0.2) if d[0] == P["CH_ENEMY"]]
+        self.assertEqual([d[1] for d in got], [P["ENEMY_SPAWN"]], "a stopped animation is forgotten")
+
     def test_claim_kinds_do_not_collide(self):
         a = self.client()
         self.claim(a, P["CLAIM_CSA"], "Map.X", 1)

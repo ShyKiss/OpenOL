@@ -1965,10 +1965,18 @@ void FHeroChannelReceiveTicker::Tick(FLOAT DeltaTime)
     if (!GMpConn.SyncEnemies)
         return;
     const FLOAT EnemyInterpSpeed = 8.0f;
+    // Grab, kill and cutscene animations place the hero themselves and must not be pushed
+    // out of the enemy (a real one has no such problem: it plays the same animation).
+    const AOLHero* LocalHero = GMultiplayerHero;
+    const UBOOL bBlockHero = !LocalHero
+        || !((INT)LocalHero->SpecialMove >= SMT_HeroGrabbedNormal && (INT)LocalHero->SpecialMove <= SMT_Dying)
+           && LocalHero->LocomotionMode != LM_Cinematic;
     for (INT i = 0; i < Controller->RemoteEnemies.Num(); i++)
     {
         FRemoteEnemyState& RS = Controller->RemoteEnemies(i);
         if (!RS.DummyEnemy) continue;
+        if (RS.DummyEnemy->bBlockActors != bBlockHero)
+            RS.DummyEnemy->SetCollision(bBlockHero, bBlockHero, TRUE);
         FLOAT DT = DeltaTime;
         FVector SmoothedLoc = VInterpTo(RS.DummyEnemy->Location, RS.TargetLoc, DT, EnemyInterpSpeed);
         RS.DummyEnemy->SetLocation(SmoothedLoc);
