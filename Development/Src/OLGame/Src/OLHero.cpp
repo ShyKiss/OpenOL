@@ -7948,6 +7948,13 @@ UBOOL AOLHero::TryObjectPickup(UBOOL playerInteraction)
 				}
 				else
 				{
+					// In multiplayer the server grants the pickup first; this runs again once it does.
+					extern UBOOL MpWorld_ClaimPickup(AOLPickableObject*);
+					if (MpWorld_ClaimPickup(pickable))
+					{
+						return FALSE;
+					}
+
 					if (!TryCommitToSpecialMove(SMT_PickupObject, pickable))
 					{
 						return FALSE;

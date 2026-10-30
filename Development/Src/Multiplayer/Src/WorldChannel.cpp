@@ -189,6 +189,98 @@ UBOOL MpWorld_InterceptTouch(USeqEvent_Touch* TouchEvent, AActor* Originator, AA
 }
 
 // ============================================================================
+// Claims: CSAs and pickups wait for the server before anything happens locally
+// ============================================================================
+
+// The claim in flight, cleared by the answer or after a timeout if it never comes.
+static UObject* GClaimPending      = NULL;
+static DOUBLE   GClaimPendingUntil = 0.0;
+// Set while re-running the interaction the server has just granted.
+static UObject* GClaimGranted      = NULL;
+
+// TRUE means the caller must not act on Object now.
+static UBOOL ClaimOrWait(UObject* Object, BYTE Kind, INT MaxCount)
+{
+    if (GClaimGranted)
+        return GClaimGranted != Object;
+    if (!GMultiplayerController || !CanWorldSend() || GMpConn.WorldEpoch == 0)
+        return FALSE;
+
+    const DOUBLE Now = appSeconds();
+    if (GClaimPending && Now < GClaimPendingUntil)
+        return TRUE;
+
+    BYTE Utf8[252];
+    const INT Utf8Len = TCHARToUTF8(Utf8, sizeof(Utf8), *Object->GetPathName());
+    BYTE B[5 + 252];
+    B[0] = CH_WORLD;
+    B[1] = WORLD_CLAIM;
+    B[2] = Kind;
+    B[3] = (BYTE)Clamp<INT>(MaxCount, 0, 255);
+    B[4] = (BYTE)Utf8Len;
+    appMemcpy(B + 5, Utf8, Utf8Len);
+    GMpConn.SendBinary(B, 5 + Utf8Len);
+
+    GClaimPending      = Object;
+    GClaimPendingUntil = Now + 2.0;
+    return TRUE;
+}
+
+// Called from AOLCSA::TryActivate just before it consumes anything.
+UBOOL MpWorld_ClaimCSA(AOLCSA* CSA)
+{
+    if (!GMpConn.SyncMatinees)
+        return FALSE;
+    // Blacklisted CSAs stay local on every client.
+    if (GMultiplayerController
+        && GMultiplayerController->CSAActBlacklist.FindItemIndex(CSA->GetPathName()) != INDEX_NONE)
+        return FALSE;
+    return ClaimOrWait(CSA, CLAIM_CSA, CSA->MaxTriggerCount);
+}
+
+// Called from AOLHero::TryObjectPickup when the player presses use.
+UBOOL MpWorld_ClaimPickup(AOLPickableObject* Pickup)
+{
+    if (!GMpConn.SyncPickups)
+        return FALSE;
+    return ClaimOrWait(Pickup, CLAIM_PICKUP, 1);
+}
+
+static void SendClaimRelease(BYTE Kind, UObject* Object, INT MaxCount)
+{
+    BYTE Utf8[252];
+    const INT Utf8Len = TCHARToUTF8(Utf8, sizeof(Utf8), *Object->GetPathName());
+    BYTE B[5 + 252];
+    B[0] = CH_WORLD;
+    B[1] = WORLD_CLAIM_RELEASE;
+    B[2] = Kind;
+    B[3] = (BYTE)Clamp<INT>(MaxCount, 0, 255);
+    B[4] = (BYTE)Utf8Len;
+    appMemcpy(B + 5, Utf8, Utf8Len);
+    GMpConn.SendBinary(B, 5 + Utf8Len);
+}
+
+static void RunGrantedClaim(BYTE Kind, UObject* Object, UBOOL bCatchUp)
+{
+    AOLHero* Hero = GMultiplayerHero;
+    UBOOL bStarted = FALSE;
+    GClaimGranted = Object;
+    if (Hero)
+        bStarted = Kind == CLAIM_CSA ? Hero->TryCSA(TRUE) : Hero->TryObjectPickup(TRUE);
+    GClaimGranted = NULL;
+
+    // A catch-up used nothing on the server, so there is nothing to give back.
+    if (!bStarted && !bCatchUp)
+        SendClaimRelease(Kind, Object, Kind == CLAIM_CSA ? ((AOLCSA*)Object)->MaxTriggerCount : 1);
+}
+
+static UObject* FindClaimObject(BYTE Kind, const FString& Path)
+{
+    UClass* Class = Kind == CLAIM_CSA ? AOLCSA::StaticClass() : AOLPickableObject::StaticClass();
+    return UObject::StaticFindObject(Class, NULL, *Path, FALSE);
+}
+
+// ============================================================================
 // Send — pickup state
 // ============================================================================
 
@@ -402,11 +494,58 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
     case WORLD_TRIGGER_DENIED:
         if (ReadWorldString(Data, DataLen, 0, Str))
         {
-            // The world already fired it. If our Kismet does not know that (we reloaded a
-            // checkpoint or joined later), catch up, otherwise the script would stay stuck.
+            // The commit of a winning player arrives before this, so a local count below
+            // the limit means our Kismet was rolled back (checkpoint reload, late join).
+            // For this client it is the first run: activate fully, only here.
             USeqEvent_Touch* TouchEvent = FindTouchEvent(Str);
-            if (TouchEvent && TouchEvent->MaxTriggerCount > 0)
-                ApplyRemoteTrigger(ControllerOwner, TouchEvent);
+            if (TouchEvent && GMultiplayerHero && TouchEvent->MaxTriggerCount > 0
+                && TouchEvent->TriggerCount < TouchEvent->MaxTriggerCount)
+            {
+                GApplyingTriggerCommit = TRUE;
+                TouchEvent->CheckTouchActivate(TouchEvent->Originator, GMultiplayerHero, FALSE);
+                GApplyingTriggerCommit = FALSE;
+            }
+        }
+        break;
+
+    case WORLD_CLAIM:
+        if (DataLen >= 4 && ReadWorldString(Data, DataLen, 2, Str))
+        {
+            const BYTE Kind = Data[0];
+            UObject* Object = FindClaimObject(Kind, Str);
+            if (SenderID == GMpConn.LocalPlayerID)
+            {
+                GClaimPending = NULL;
+                if (Object) RunGrantedClaim(Kind, Object, FALSE);
+                break;
+            }
+            // Someone else got it. A CSA must look used here before our own refusal arrives,
+            // or the refusal would read as "our Kismet was rolled back".
+            AOLCSA* CSA = Kind == CLAIM_CSA ? Cast<AOLCSA>(Object) : NULL;
+            if (CSA)
+                CSA->TriggerCount = Max(CSA->TriggerCount, (INT)Data[DataLen - 1]);
+        }
+        break;
+
+    case WORLD_CLAIM_RELEASE:
+        if (DataLen >= 4 && SenderID != GMpConn.LocalPlayerID && ReadWorldString(Data, DataLen, 2, Str))
+        {
+            AOLCSA* CSA = Data[0] == CLAIM_CSA ? Cast<AOLCSA>(FindClaimObject(CLAIM_CSA, Str)) : NULL;
+            if (CSA)
+                CSA->TriggerCount = (INT)Data[DataLen - 1];
+        }
+        break;
+
+    case WORLD_CLAIM_DENIED:
+        if (DataLen >= 2 && ReadWorldString(Data, DataLen, 1, Str))
+        {
+            GClaimPending = NULL;
+            // Same catch-up as triggers: a local count below the limit means this client
+            // was rolled back, and for it the CSA is a first run. Pickups stay refused:
+            // the snapshot already hid the object and restored its item.
+            AOLCSA* CSA = Data[0] == CLAIM_CSA ? Cast<AOLCSA>(FindClaimObject(CLAIM_CSA, Str)) : NULL;
+            if (CSA && CSA->MaxTriggerCount > 0 && CSA->TriggerCount < CSA->MaxTriggerCount)
+                RunGrantedClaim(CLAIM_CSA, CSA, TRUE);
         }
         break;
 

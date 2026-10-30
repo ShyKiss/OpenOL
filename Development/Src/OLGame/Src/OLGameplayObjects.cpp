@@ -533,6 +533,13 @@ UBOOL AOLCSA::TryActivate(AOLHero* hero, UBOOL playerInteraction)
 		return FALSE;
 	}	
 
+	// In multiplayer the server grants the CSA first; TryCSA runs again once it does.
+	extern UBOOL MpWorld_ClaimCSA(AOLCSA*);
+	if (MpWorld_ClaimCSA(this))
+	{
+		return FALSE;
+	}
+
 	if (bConsumeItem && RequiredItem != NAME_None)
 	{
 		hero->OLPC->InventoryManager->ConsumeItem(RequiredItem);

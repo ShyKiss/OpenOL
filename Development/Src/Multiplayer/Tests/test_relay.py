@@ -452,6 +452,48 @@ class RelayTest(unittest.TestCase):
         self.fire(a, "Map.Touch_4", 1)
         self.assertEqual(len([d for d in a.recv_all(0.1) if is_fire(d)]), 1)
 
+    def claim(self, client, kind, path, max_count):
+        client.send(P["CH_WORLD"], P["WORLD_CLAIM"], bytes([kind, max_count]) + wstr(path))
+
+    def test_claim_has_one_winner_and_loser_learns_first(self):
+        a, b = self.client(), self.client()
+        self.claim(a, P["CLAIM_CSA"], "Map.CSA_1", 1)
+        self.claim(b, P["CLAIM_CSA"], "Map.CSA_1", 1)
+        msgs = [d for d in b.recv_all(0.2) if d[0] == P["CH_WORLD"]]
+        types = [d[1] for d in msgs]
+        self.assertEqual(types, [P["WORLD_CLAIM"], P["WORLD_CLAIM_DENIED"]])
+        self.assertEqual(struct.unpack_from("<I", msgs[0], 2)[0], a.player_id)
+        self.assertEqual(msgs[0][-1], 1, "the grant carries the use count")
+        self.assertEqual(msgs[1][6:], bytes([P["CLAIM_CSA"]]) + wstr("Map.CSA_1"))
+        self.assertEqual([d[1] for d in a.recv_all(0.1) if d[0] == P["CH_WORLD"]], [P["WORLD_CLAIM"]])
+
+    def test_released_claim_can_be_taken_again(self):
+        a, b = self.client(), self.client()
+        body = bytes([P["CLAIM_PICKUP"], 1]) + wstr("Map.Key")
+        self.claim(a, P["CLAIM_PICKUP"], "Map.Key", 1)
+        b.wait_for(lambda d: d[:2] == bytes([P["CH_WORLD"], P["WORLD_CLAIM"]]))
+        a.send(P["CH_WORLD"], P["WORLD_CLAIM_RELEASE"], body)
+        rel = b.wait_for(lambda d: d[:2] == bytes([P["CH_WORLD"], P["WORLD_CLAIM_RELEASE"]]))
+        self.assertEqual(rel[-1], 0, "the release carries the new use count")
+        self.claim(b, P["CLAIM_PICKUP"], "Map.Key", 1)
+        got = b.wait_for(lambda d: d[0] == P["CH_WORLD"] and d[1] in (P["WORLD_CLAIM"], P["WORLD_CLAIM_DENIED"]))
+        self.assertEqual(got[1], P["WORLD_CLAIM"])
+
+    def test_claim_kinds_do_not_collide(self):
+        a = self.client()
+        self.claim(a, P["CLAIM_CSA"], "Map.X", 1)
+        self.claim(a, P["CLAIM_PICKUP"], "Map.X", 1)
+        a.send(P["CH_WORLD"], P["WORLD_TRIGGER_FIRE"], bytes([1]) + wstr("Map.X"))
+        got = [d[1] for d in a.recv_all(0.2) if d[0] == P["CH_WORLD"]]
+        self.assertEqual(got, [P["WORLD_CLAIM"], P["WORLD_CLAIM"], P["WORLD_TRIGGER_FIRE"]])
+
+    def test_claim_rejects_bad_packets(self):
+        a = self.client()
+        for body in (b"", b"\x01", b"\x01\x01", b"\x01\x01\x00", b"\x01\x01\x05ab", b"\x09\x01\x01a"):
+            a.send(P["CH_WORLD"], P["WORLD_CLAIM"], body)
+        self.assertFalse([d for d in a.recv_all(0.1) if d[0] == P["CH_WORLD"]])
+        self.assert_alive(a)
+
     def test_trigger_needs_world_and_valid_packet(self):
         a = self.client(enter=False)
         self.fire(a, "Map.Touch_5", 1)
