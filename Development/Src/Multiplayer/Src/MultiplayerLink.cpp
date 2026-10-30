@@ -176,10 +176,10 @@ void FMpConnection::SendBinary(BYTE* Data, INT Count)
     // Wire format: [channel(1)][type(1)][player_id LE4][payload...]
     // Data layout: [channel(1)][type(1)][payload...]
     // SendBinary inserts player_id between byte[1] and byte[2].
-    if (Count < 2 || Count > 4090)
+    if (Count < 2 || Count + 4 > OL_MAX_MSG || !bIsConnected)
         return;
 
-    BYTE Out[4096];
+    BYTE Out[OL_MAX_MSG];
     Out[0] = Data[0];                        // channel
     Out[1] = Data[1];                        // type
     Out[2] = (BYTE)(LocalPlayerID);
@@ -188,7 +188,18 @@ void FMpConnection::SendBinary(BYTE* Data, INT Count)
     Out[5] = (BYTE)(LocalPlayerID >> 24);
     appMemcpy(Out + 6, Data + 2, Count - 2); // payload
 
-    SendTo(ServerAddr, Out, Count + 4);
+    ol_conn_send(&Conn, ol_lane_for(Out[0], Out[1]), Out, Count + 4);
+}
+
+void FMpConnection::TransportDeliver(void* User, int Lane, uint8_t* Msg, int Len)
+{
+    ((FMpConnection*)User)->HandleMessage(Msg, Len);
+}
+
+void FMpConnection::TransportSend(void* User, const uint8_t* Datagram, int Len)
+{
+    FMpConnection* Self = (FMpConnection*)User;
+    Self->SendTo(Self->ServerAddr, (BYTE*)Datagram, Len);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +213,7 @@ void FMpConnection::Disconnect()
 
     BYTE B[2] = { CH_WORLD, WORLD_DISCONNECT };
     SendBinary(B, 2);
+    ol_conn_flush(&Conn, appSeconds(), TransportSend, this);
 
     bIsConnected  = FALSE;
     bIsHandshaked = FALSE;
@@ -265,6 +277,22 @@ void FMpConnection::OnReceivedData(FIpAddr SrcAddr, BYTE* Data, INT Count)
     if (Count <= 0)
         return;
 
+    if (Data[0] == OL_MAGIC)
+    {
+        ol_conn_on_datagram(&Conn, appSeconds(), Data, Count, TransportDeliver, this);
+        return;
+    }
+
+    // Outside a session the server only sends these two.
+    if (Data[0] == SRV_READY || Data[0] == SRV_HELLO_FAIL)
+        HandleMessage(Data, Count);
+}
+
+void FMpConnection::HandleMessage(BYTE* Data, INT Count)
+{
+    if (Count <= 0)
+        return;
+
     if (GWorld && GWorld->GetWorldInfo())
         LastReceivedTime = GWorld->GetWorldInfo()->TimeSeconds;
 
@@ -305,6 +333,13 @@ void FMpConnection::OnReceivedData(FIpAddr SrcAddr, BYTE* Data, INT Count)
                     {
                         appMemcpy(SessionToken, Payload + TokenOffset, 32);
                         bHasSessionToken = TRUE;
+                    }
+                    if (PayloadLen >= TokenOffset + 32 + 8)
+                    {
+                        QWORD ConnId = 0;
+                        appMemcpy(&ConnId, Payload + TokenOffset + 32, 8);
+                        if (ConnId != Conn.conn_id)
+                            ol_conn_reset(&Conn, ConnId);
                     }
                 }
                 else
@@ -515,8 +550,11 @@ void FMpConnection::Tick(FLOAT DeltaTime)
             HelloTimer    = 0.f;
             if (GMultiplayerController)
                 GMultiplayerController->OnDisconnected();
+            return;
         }
     }
+
+    ol_conn_flush(&Conn, appSeconds(), TransportSend, this);
 }
 
 // ---------------------------------------------------------------------------

@@ -1830,8 +1830,16 @@ UBOOL FHeroChannelTicker::IsTickable() const
 
 void FHeroChannelTicker::Tick(FLOAT DeltaTime)
 {
-    Channel->SendGlobalState();
-    Channel->SendHeadRotation();
+    // State rate must not depend on FPS.
+    static const FLOAT StateInterval = 1.f / 30.f;
+    static FLOAT StateTimer = 0.f;
+    StateTimer -= DeltaTime;
+    if (StateTimer <= 0.f)
+    {
+        StateTimer = Max(StateTimer + StateInterval, 0.f);
+        Channel->SendGlobalState();
+        Channel->SendHeadRotation();
+    }
     Channel->SendMesh();
     Channel->SendCinematicAnimation();
     Channel->SendSpecialMoveType();

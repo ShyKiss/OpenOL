@@ -172,9 +172,9 @@ void UPushableChannel::TickSend(FLOAT DeltaTime)
         }
         else if (P->LocalPushSeq > 0 && P != AP)
         {
-            // Was pushing but no longer active — trigger stop burst
-            P->PushStopRepeat = 5;
-            // LocalPushSeq reset happens after burst completes (in the PushStopRepeat branch above)
+            // Was pushing but no longer active — send one stop packet; PUSH_STATE is reliable.
+            P->PushStopRepeat = 1;
+            // LocalPushSeq reset happens in the PushStopRepeat branch above
         }
     }
 }

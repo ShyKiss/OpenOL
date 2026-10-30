@@ -209,7 +209,7 @@ void UWorldChannel::SendMatineeState()
     GWorld->GetGameSequence()->FindSeqObjectsByClass(USeqAct_Interp::StaticClass(), AllMatinees, TRUE);
 
     // Build packet: [CH_WORLD][WORLD_MATINEE_STATE][count(1)] { [pathLen(1)][path ASCII][position f32][playRate f32] }
-    BYTE B[1280];
+    BYTE B[OL_MAX_MSG - 4];  // SendBinary adds the 4-byte player_id
     INT  N = 0;
     B[N++] = CH_WORLD;
     B[N++] = WORLD_MATINEE_STATE;

@@ -9,6 +9,7 @@
 #include "UnIpDrv.h"
 #include "IpDrvClasses.h"
 #include "OLGame.h"
+#include "ol_transport.h"
 
 // Native structs referenced by AMultiplayerController — must be declared before MultiplayerClasses.h.
 // Fields match the UC struct declarations in MultiplayerController.uc.
@@ -85,6 +86,9 @@ public:
     // Session token (32 bytes) — received in SRV_READY, echoed as hex64 in HELLO
     // for reliable NAT rebind slot identification.
     BYTE SessionToken[32];
+
+    // Reliable transport session; conn_id comes from SRV_READY.
+    OlConn Conn;
     UBOOL bHasSessionToken;
 
     // Persistent player registry — survives map transitions.
@@ -127,6 +131,7 @@ public:
     {
         appMemzero(&ServerAddr, sizeof(ServerAddr));
         appMemzero(SessionToken, sizeof(SessionToken));
+        appMemzero(&Conn, sizeof(Conn));
     }
 
     // Connect via Steam P2P to the given host SteamID.
@@ -147,6 +152,11 @@ public:
 
     // FUdpLink override — receives all incoming UDP datagrams.
     virtual void OnReceivedData(FIpAddr SrcAddr, BYTE* Data, INT Count);
+
+    // Handles one message: a raw SRV packet or a message from the transport.
+    void HandleMessage(BYTE* Data, INT Count);
+    static void TransportDeliver(void* User, int Lane, uint8_t* Msg, int Len);
+    static void TransportSend(void* User, const uint8_t* Datagram, int Len);
 
     // Send DISCONNECT packet to server and reset connection state.
     void Disconnect();

@@ -55,6 +55,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\Src\Multiplayer\server\src\db.c" />
+    <ClCompile Include="..\..\Src\Multiplayer\server\src\ol_transport.c" />
     <ClCompile Include="..\..\Src\Multiplayer\server\src\server.c" />
     <ClCompile Include="src\relay_api.c" />
   </ItemGroup>

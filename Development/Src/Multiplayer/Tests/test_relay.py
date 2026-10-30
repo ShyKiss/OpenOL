@@ -23,6 +23,7 @@ MP = os.path.dirname(HERE)
 SERVER_SRC = os.path.join(MP, "server", "src")
 
 PORT = 27790
+MAGIC = 0xF3
 ROOM = "PUBLIC"
 
 
@@ -37,20 +38,87 @@ def load_protocol():
 P = load_protocol()
 
 
+def lane_for(channel, ptype):
+    if channel == P["CH_HERO"] and ptype in (P["HERO_STATE"], P["HERO_HEAD_ROT"]):
+        return 0
+    if channel == P["CH_ENEMY"] and ptype == P["ENEMY_LOC"]:
+        return 0
+    if channel == P["CH_SRV"] and ptype == P["SRV_PING"]:
+        return 0
+    return 1
+
+
 class Client:
+    """Minimal client of the ol_transport protocol over a lossless loopback."""
+
     def __init__(self, room=ROOM):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 22)
         self.sock.connect(("127.0.0.1", PORT))
+        self.inbox = []
+        self.conn_id = 0
+        self.seq = 0
+        self.out_id = 0
+        self.in_next = 0
+        self.in_buf = {}
         self.sock.send(("HELLO,%s,\n" % room).encode())
-        ready = self.wait_for(lambda d: d[0] == P["SRV_READY"])
+        end = time.monotonic() + 2.0
+        ready = None
+        while time.monotonic() < end and not ready:
+            if select.select([self.sock], [], [], end - time.monotonic())[0]:
+                data = self.sock.recv(4096)
+                if data[0] == P["SRV_READY"]:
+                    ready = data
+        if not ready:
+            raise AssertionError("no READY")
         self.player_id = struct.unpack_from("<I", ready, 5)[0]
         name_len = ready[9]
         self.token = ready[10 + name_len:10 + name_len + 32]
+        self.conn_id = struct.unpack_from("<Q", ready, 10 + name_len + 32)[0]
+
+    def header(self):
+        self.seq = (self.seq + 1) & 0xFFFF
+        return struct.pack("<BQHHI", MAGIC, self.conn_id, self.seq, self.in_next, 0)
+
+    def raw_message(self, lane, msg):
+        if lane == 0:
+            return bytes([0]) + struct.pack("<H", len(msg)) + msg
+        body = bytes([1]) + struct.pack("<HH", self.out_id, len(msg)) + msg
+        self.out_id = (self.out_id + 1) & 0xFFFF
+        return body
 
     def send(self, channel, ptype, payload=b""):
-        self.sock.send(bytes([channel, ptype]) + struct.pack("<I", self.player_id) + payload)
+        msg = bytes([channel, ptype]) + struct.pack("<I", self.player_id) + payload
+        self.sock.send(self.header() + self.raw_message(lane_for(channel, ptype), msg))
+
+    def on_datagram(self, data):
+        if data[0] != MAGIC:
+            return
+        off, acked = 17, False
+        while off < len(data):
+            lane = data[off]
+            if lane == 0:
+                n = struct.unpack_from("<H", data, off + 1)[0]
+                self.inbox.append(data[off + 3:off + 3 + n])
+                off += 3 + n
+            else:
+                mid, n = struct.unpack_from("<HH", data, off + 1)
+                if mid not in self.in_buf and ((mid - self.in_next) & 0xFFFF) < 0x8000:
+                    self.in_buf[mid] = data[off + 5:off + 5 + n]
+                while self.in_next in self.in_buf:
+                    self.inbox.append(self.in_buf.pop(self.in_next))
+                    self.in_next = (self.in_next + 1) & 0xFFFF
+                off += 5 + n
+                acked = True
+        if acked:
+            self.sock.send(self.header())
+
+    def pump(self, timeout):
+        if select.select([self.sock], [], [], timeout)[0]:
+            self.on_datagram(self.sock.recv(4096))
+        msgs, self.inbox = self.inbox, []
+        return msgs
 
     def recv_all(self, duration):
         packets, end = [], time.monotonic() + duration
@@ -58,15 +126,15 @@ class Client:
             left = end - time.monotonic()
             if left <= 0:
                 return packets
-            if select.select([self.sock], [], [], left)[0]:
-                packets.append(self.sock.recv(4096))
+            packets += self.pump(left)
 
     def wait_for(self, match, timeout=2.0):
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            if select.select([self.sock], [], [], end - time.monotonic())[0]:
-                data = self.sock.recv(4096)
+            msgs = self.pump(end - time.monotonic())
+            for i, data in enumerate(msgs):
                 if match(data):
+                    self.inbox = msgs[i + 1:] + self.inbox
                     return data
         raise AssertionError("expected packet did not arrive")
 
@@ -216,13 +284,55 @@ class RelayTest(unittest.TestCase):
         while time.monotonic() < end and len(arrivals) < count:
             # Keep the server's main loop busy: this used to speed up the drip.
             a.send(P["CH_SRV"], P["SRV_PING"], b"\0\0\0\0")
-            if select.select([b.sock], [], [], 0.001)[0]:
-                d = b.sock.recv(4096)
+            for d in b.pump(0.001):
                 if d[0] == P["CH_WORLD"] and d[1] == P["WORLD_PICKUP_STATE"]:
                     arrivals.append(time.monotonic())
         self.assertEqual(len(arrivals), count, "snapshots were lost")
         rate = count / max(arrivals[-1] - arrivals[0], 1e-3)
         self.assertLess(rate, 1200, "drip rate must stay near 800 packets/s under load")
+
+    def test_transport_unit(self):
+        exe = os.path.join(self.build_dir, "test_transport")
+        subprocess.check_call(["cc", "-std=c11", "-g", "-O1", "-fsanitize=address,undefined",
+                               "-I", SERVER_SRC, os.path.join(HERE, "test_transport.c"),
+                               os.path.join(SERVER_SRC, "ol_transport.c"), "-o", exe])
+        out = subprocess.run([exe], capture_output=True, text=True, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
+    def test_retransmits_until_acked(self):
+        a, b = self.client(), self.client()
+        a.send(P["CH_HERO"], P["HERO_SMT_TYPE"], b"\x07" * 8)
+        # Read without acking: the server must send the message again.
+        seen = 0
+        end = time.monotonic() + 1.5
+        while time.monotonic() < end and seen < 2:
+            if select.select([b.sock], [], [], 0.1)[0]:
+                if bytes([P["CH_HERO"], P["HERO_SMT_TYPE"]]) in b.sock.recv(4096):
+                    seen += 1
+        self.assertGreaterEqual(seen, 2)
+
+    def test_address_change_keeps_session(self):
+        a, b = self.client(), self.client()
+        moved = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        moved.bind(("127.0.0.1", 0))
+        moved.connect(("127.0.0.1", PORT))
+        old, a.sock = a.sock, moved
+        old.close()
+        a.send(P["CH_SRV"], P["SRV_PING"], b"\x01\x02\x03\x04")
+        a.wait_for(lambda d: d[0] == P["CH_SRV"] and d[1] == P["SRV_PING"])
+
+    def test_raw_game_packet_rejected(self):
+        a, b = self.client(), self.client()
+        pid = struct.pack("<I", a.player_id)
+        a.sock.send(bytes([P["CH_HERO"], P["HERO_HEAD_ROT"]]) + pid + b"\x11" * 8)
+        self.assertFalse([d for d in b.recv_all(0.2) if d[:2] == bytes([P["CH_HERO"], P["HERO_HEAD_ROT"]])])
+
+    def test_sender_id_cannot_be_forged(self):
+        a, b = self.client(), self.client()
+        msg = bytes([P["CH_HERO"], P["HERO_HEAD_ROT"]]) + struct.pack("<I", b.player_id) + b"\x11" * 8
+        a.sock.send(a.header() + a.raw_message(0, msg))
+        data = b.wait_for(lambda d: d[0] == P["CH_HERO"] and d[1] == P["HERO_HEAD_ROT"])
+        self.assertEqual(struct.unpack_from("<I", data, 2)[0], a.player_id)
 
     def test_fuzz_random_datagrams(self):
         rng = random.Random(1234)
@@ -238,14 +348,19 @@ class RelayTest(unittest.TestCase):
         # Valid header from a real session, so the payload reaches every parser.
         rng = random.Random(5678)
         a = self.client()
-        pid = struct.pack("<I", a.player_id)
-        lengths = [0, 1, 2, 6, 7, 11, 12, 13, 17, 18, 26, 27, 64, 255, 256, 513, 1400, 4090]
+        lengths = [0, 1, 2, 6, 7, 11, 12, 13, 17, 18, 26, 27, 64, 255, 256, 513, 1100]
         for i in range(30000):
             channel = rng.randint(0, 5)
             ptype = rng.randint(0, 0x12)
             if channel == P["CH_WORLD"] and ptype == P["WORLD_DISCONNECT"]:
                 continue
-            a.sock.send(bytes([channel, ptype]) + pid + rng.randbytes(rng.choice(lengths)))
+            a.send(channel, ptype, rng.randbytes(rng.choice(lengths)))
+            if i % 40 == 0:
+                a.pump(0)
+            if i % 7 == 0:
+                # Garbage transport framing with a valid conn_id.
+                n = rng.choice(lengths)
+                a.sock.send(a.header() + rng.randbytes(n))
             if i % 1000 == 0:
                 time.sleep(0.005)
         # Let the per-second rate window reset, otherwise the ping itself is dropped.

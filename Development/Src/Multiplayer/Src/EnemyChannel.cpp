@@ -385,6 +385,14 @@ void UEnemyChannel::TickSend(FLOAT DeltaTime)
 
     ControllerOwner->IndexEnemies();
 
+    // Position rate must not depend on FPS.
+    static const FLOAT LocInterval = 1.f / 20.f;
+    static FLOAT LocTimer = 0.f;
+    LocTimer -= DeltaTime;
+    const UBOOL bSendLoc = LocTimer <= 0.f;
+    if (bSendLoc)
+        LocTimer = Max(LocTimer + LocInterval, 0.f);
+
     for (INT i = 0; i < ControllerOwner->CachedEnemies.Num(); i++)
     {
         AOLEnemyPawn* E = ControllerOwner->CachedEnemies(i);
@@ -414,7 +422,8 @@ void UEnemyChannel::TickSend(FLOAT DeltaTime)
                 if (Bot->bAnimating)  BotFlags |= 4;
             }
 
-            SendEnemyLocBinary(E, EnvIdx, BotLookAt, bLookActive, BotFlags);
+            if (bSendLoc)
+                SendEnemyLocBinary(E, EnvIdx, BotLookAt, bLookActive, BotFlags);
             SendSMT(E, i);
         }
         else if (ControllerOwner->LastEnemyAlive(i))
