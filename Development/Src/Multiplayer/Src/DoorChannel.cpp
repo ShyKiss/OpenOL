@@ -73,20 +73,6 @@ static void SendDoorState(INT X, INT Y, INT Z, FLOAT Angle, FLOAT Speed)
     GMpConn.SendBinary(B, N);
 }
 
-// DOOR_INIT: same layout as DOOR_ANGLE but server only stores if no snapshot exists yet.
-static void SendDoorInit(INT X, INT Y, INT Z, FLOAT Angle)
-{
-    BYTE B[DOOR_ANGLE_SIZE];
-    INT N = 0;
-    N = PutU8 (B, N, CH_DOOR);
-    N = PutU8 (B, N, DOOR_INIT);
-    N = PutI32(B, N, X);
-    N = PutI32(B, N, Y);
-    N = PutI32(B, N, Z);
-    N = PutI32(B, N, appRound(Angle * 1000.0f));
-    GMpConn.SendBinary(B, N);
-}
-
 static void SendDoorUnlock(INT X, INT Y, INT Z)
 {
     BYTE B[DOOR_UNLOCK_SIZE];
@@ -447,28 +433,9 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
 }
 
 // --- BroadcastDoorStates ---
+// Doors nobody touched match the map on every client, so the server only needs real
+// changes. Still called from MultiplayerController.uc; remove with the next script change.
 
 void UDoorChannel::BroadcastDoorStates(const FString& LevelFilter)
 {
-    AMultiplayerController* TC = ControllerOwner;
-    // HeroPawn may be null on level load (called from OnLevelBecameVisible before pawn spawns)
-    if (!TC || !GMpConn.bIsConnected) return;
-
-    if (!TC->bDoorsIndexed)
-        TC->IndexDoors();
-
-    for (INT i = 0; i < TC->CachedDoors.Num(); i++)
-    {
-        AOLDoor* D = Cast<AOLDoor>(TC->CachedDoors(i));
-        if (!D) continue;
-        if (LevelFilter.Len() > 0 && FString(D->GetOutermost()->GetName()) != LevelFilter)
-            continue;
-
-        FLOAT Angle = D->GetOpenAngle();
-
-        // Send DOOR_INIT for every door — server stores only if no snapshot exists yet
-        // (first-write-wins). Never relay to other clients, so their state is not disturbed.
-        // The joining client receives correct state via REQUEST_DOORS after this broadcast.
-        SendDoorInit(appRound(D->Location.X), appRound(D->Location.Y), appRound(D->Location.Z), Angle);
-    }
 }

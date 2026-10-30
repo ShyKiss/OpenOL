@@ -180,42 +180,12 @@ void UPushableChannel::TickSend(FLOAT DeltaTime)
 }
 
 // ============================================================================
-// BroadcastPushableStates — send current state of all pushed pushables.
-// Called on REQUEST_STATE from a joining player.
+// BroadcastPushableStates — pushables nobody moved match the map on every client.
+// Still called from MultiplayerController.uc; remove with the next script change.
 // ============================================================================
 
 void UPushableChannel::BroadcastPushableStates()
 {
-    if (!GMpConn.bIsConnected) return;
-    if (!ControllerOwner->bPushablesIndexed)
-        ControllerOwner->IndexPushables();
-
-    for (INT i = 0; i < ControllerOwner->CachedPushables.Num(); i++)
-    {
-        AOLPushableObject* P = ControllerOwner->CachedPushables(i);
-        if (!P) continue;
-
-        // Skip pushables at rest — server only needs to know about non-zero positions.
-        // PUSH_INIT is first-write-wins: server ignores it if a snapshot already exists,
-        // so this broadcast won't overwrite state set by an active player.
-        if (Abs(P->CurrentDisplacement) < 0.5f) continue;
-
-        BYTE B[2 + sizeof(FPushStatePacket)];
-        INT  N = 0;
-        N = PutU8(B, N, CH_PUSH);
-        N = PutU8(B, N, PUSH_INIT);  // first-write-wins; server stores only if no snapshot exists
-        FPushStatePacket Pkt;
-        appMemzero(&Pkt, sizeof(Pkt));
-        Pkt.KeyX      = (INT)P->Location.X;
-        Pkt.KeyY      = (INT)P->Location.Y;
-        Pkt.KeyZ      = (INT)P->Location.Z;
-        Pkt.DispX1000 = appRound(P->CurrentDisplacement * 1000.0f);
-        Pkt.Seq       = 0;    // init snapshot has no sequence — receivers accept unconditionally
-        Pkt.bPushing  = 0;    // always a position sync, never an active push signal
-        appMemcpy(B + N, &Pkt, sizeof(Pkt));
-        N += sizeof(Pkt);
-        GMpConn.SendBinary(B, N);
-    }
 }
 
 // ============================================================================

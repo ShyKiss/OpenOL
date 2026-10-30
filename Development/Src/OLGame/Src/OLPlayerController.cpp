@@ -2665,6 +2665,9 @@ void AOLPlayerController::StartNewGameAtCheckpoint(const FString& CheckpointStr,
 	if (!StartCP)
 		return;
 
+	extern void MpSession_OnStartAtCheckpoint(const FString&);
+	MpSession_OnStartAtCheckpoint(CheckpointStr);
+
 debugf(TEXT("SNGAC: StopAllSounds"));
 	if (HUD && HUD->eventIsMainMenuOpen())
 		StopAllSounds();

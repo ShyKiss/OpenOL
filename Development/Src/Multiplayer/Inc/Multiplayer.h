@@ -89,6 +89,14 @@ public:
 
     // Reliable transport session; conn_id comes from SRV_READY.
     OlConn Conn;
+
+    // World session. WorldEpoch is 0 until the server has placed us in a world.
+    WORD    WorldEpoch;
+    UBOOL   bTravelPending;      // SESS_TRAVEL received but no controller to apply it yet
+    UBOOL   bSkipNextEnter;      // the checkpoint restart already reported the world
+    FString TravelCheckpoint;    // restart at this checkpoint belongs to SESS_TRAVEL
+    FString TravelPersist;
+    FString LastReportedCheckpoint;
     UBOOL bHasSessionToken;
 
     // Persistent player registry — survives map transitions.
@@ -124,6 +132,7 @@ public:
         , SyncInteractable(TRUE), SyncEnemies(TRUE)
         , SyncMatinees(TRUE), SyncPickups(TRUE), SpeedrunMode(FALSE)
         , bHasSessionToken(FALSE)
+        , WorldEpoch(0), bTravelPending(FALSE), bSkipNextEnter(FALSE)
         , OnlineCount(0), PingTimer(5.f)
         , bP2PMode(FALSE), HostSteamID(0)
         , bP2PColdLaunch(FALSE)

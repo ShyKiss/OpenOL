@@ -77,6 +77,10 @@ class Client:
         self.token = ready[10 + name_len:10 + name_len + 32]
         self.conn_id = struct.unpack_from("<Q", ready, 10 + name_len + 32)[0]
 
+    def enter(self, cp="CP_A", persist="MapA", epoch=0, reset=False):
+        body = struct.pack("<HB", epoch, 1 if reset else 0) + wstr(cp) + wstr(persist)
+        self.send(P["CH_SESS"], P["SESS_ENTER"], body)
+
     def header(self):
         self.seq = (self.seq + 1) & 0xFFFF
         return struct.pack("<BQHHI", MAGIC, self.conn_id, self.seq, self.in_next, 0)
@@ -142,6 +146,22 @@ class Client:
         self.sock.close()
 
 
+def wstr(text):
+    return bytes([len(text)]) + text.encode()
+
+
+def world_msg(data):
+    epoch = struct.unpack_from("<H", data, 6)[0]
+    n = data[8]
+    cp = data[9:9 + n].decode()
+    m = data[9 + n]
+    return epoch, cp, data[10 + n:10 + n + m].decode()
+
+
+def sess(ptype):
+    return lambda d: d[0] == P["CH_SESS"] and d[1] == P[ptype]
+
+
 def enemy(name, tail=b""):
     return bytes([len(name)]) + name + tail
 
@@ -189,9 +209,12 @@ class RelayTest(unittest.TestCase):
         self.assertFalse(crashed, "server exited during the test:\n" + output[-4000:])
         self.assertNotIn("Sanitizer", output, output[-4000:])
 
-    def client(self):
+    def client(self, enter=True):
         c = Client()
         self.clients.append(c)
+        if enter:
+            c.enter()
+            c.wait_for(sess("SESS_BASELINE_END"))
         return c
 
     def assert_alive(self, client):
@@ -227,7 +250,8 @@ class RelayTest(unittest.TestCase):
         a.send(P["CH_ENEMY"], P["ENEMY_LOC"], enemy(name, b"\0" + b"L" * 40))
         a.send(P["CH_ENEMY"], P["ENEMY_DOOR_BREAK"], enemy(name, b"B" * 13))
         time.sleep(0.1)
-        b = self.client()
+        b = self.client(enter=False)
+        b.enter()
         got = [d for d in b.recv_all(0.5) if d[0] == P["CH_ENEMY"]]
         self.assertEqual([d[1] for d in got], [P["ENEMY_SPAWN"], P["ENEMY_LOC"]])
         self.assertIn(b"L" * 40, got[1])
@@ -277,7 +301,8 @@ class RelayTest(unittest.TestCase):
             if i % 50 == 0:
                 time.sleep(0.01)
         time.sleep(0.1)
-        b = self.client()
+        b = self.client(enter=False)
+        b.enter()
         start = time.monotonic()
         arrivals = []
         end = start + 3.0
@@ -290,6 +315,98 @@ class RelayTest(unittest.TestCase):
         self.assertEqual(len(arrivals), count, "snapshots were lost")
         rate = count / max(arrivals[-1] - arrivals[0], 1e-3)
         self.assertLess(rate, 1200, "drip rate must stay near 800 packets/s under load")
+
+    def test_join_same_world_gets_baseline(self):
+        a = self.client()
+        a.send(P["CH_WORLD"], P["WORLD_PICKUP_STATE"], struct.pack("<iii", 1, 2, 3))
+        time.sleep(0.05)
+        b = self.client(enter=False)
+        self.assertFalse([d for d in b.recv_all(0.2) if d[0] == P["CH_WORLD"]],
+                         "no world data before SESS_ENTER")
+        b.enter()
+        epoch = world_msg(b.wait_for(sess("SESS_WORLD")))[0]
+        self.assertGreater(epoch, 0)
+        msgs = b.recv_all(0.3)
+        order = [(d[0], d[1]) for d in msgs]
+        self.assertIn((P["CH_WORLD"], P["WORLD_PICKUP_STATE"]), order)
+        self.assertLess(order.index((P["CH_WORLD"], P["WORLD_PICKUP_STATE"])),
+                        order.index((P["CH_SESS"], P["SESS_BASELINE_END"])))
+
+    def test_fresh_joiner_is_sent_to_running_world(self):
+        a = self.client()
+        b = self.client(enter=False)
+        b.enter(cp="", persist="DLC_Intro_Persistent")
+        self.assertEqual(world_msg(b.wait_for(sess("SESS_TRAVEL")))[1:], ("CP_A", "MapA"))
+        a.send(P["CH_HERO"], P["HERO_HEAD_ROT"], b"\x11" * 8)
+        self.assertFalse([d for d in b.recv_all(0.2) if d[0] == P["CH_HERO"]],
+                         "not in the world until it arrives")
+        b.enter(cp="CP_A", persist="MapA", epoch=1)
+        b.wait_for(sess("SESS_WORLD"))
+        a.send(P["CH_HERO"], P["HERO_HEAD_ROT"], b"\x11" * 8)
+        b.wait_for(lambda d: d[0] == P["CH_HERO"])
+
+    def test_alone_in_other_map_replaces_world(self):
+        a = self.client()
+        a.enter(cp="CP_B", persist="MapB", epoch=1)
+        epoch, cp, persist = world_msg(a.wait_for(sess("SESS_WORLD")))
+        self.assertEqual((epoch, cp, persist), (2, "CP_B", "MapB"))
+
+    def test_reset_clears_world_and_moves_others(self):
+        a, b = self.client(), self.client()
+        a.send(P["CH_WORLD"], P["WORLD_PICKUP_STATE"], struct.pack("<iii", 7, 7, 7))
+        b.wait_for(lambda d: d[0] == P["CH_WORLD"])
+        a.enter(cp="CP_B", persist="MapB", epoch=1, reset=True)
+        epoch, cp, persist = world_msg(b.wait_for(sess("SESS_TRAVEL")))
+        self.assertEqual((epoch, cp, persist), (2, "CP_B", "MapB"))
+        b.enter(cp="CP_B", persist="MapB", epoch=2)
+        msgs = b.recv_all(0.3)
+        self.assertIn((P["CH_SESS"], P["SESS_BASELINE_END"]), [(d[0], d[1]) for d in msgs])
+        self.assertFalse([d for d in msgs if d[0] == P["CH_WORLD"]], "old world leaked into the new one")
+
+    def test_stale_enter_does_not_replace_world(self):
+        a, b = self.client(), self.client()
+        a.enter(cp="CP_B", persist="MapB", epoch=1, reset=True)
+        b.wait_for(sess("SESS_TRAVEL"))
+        # b finished respawning on the old map before it applied the travel.
+        b.enter(cp="CP_A", persist="MapA", epoch=1)
+        self.assertFalse([d for d in a.recv_all(0.2) if d[:2] == bytes([P["CH_SESS"], P["SESS_TRAVEL"]])])
+
+    def test_checkpoint_updates_world_for_joiners(self):
+        a = self.client()
+        a.send(P["CH_SESS"], P["SESS_CHECKPOINT"], wstr("CP_A2") + wstr("MapA"))
+        time.sleep(0.05)
+        b = self.client(enter=False)
+        b.enter(cp="", persist="Lobby")
+        self.assertEqual(world_msg(b.wait_for(sess("SESS_TRAVEL")))[1:], ("CP_A2", "MapA"))
+
+    def test_checkpoint_on_new_map_moves_others(self):
+        a, b = self.client(), self.client()
+        a.send(P["CH_SESS"], P["SESS_CHECKPOINT"], wstr("CP_C") + wstr("MapC"))
+        self.assertEqual(world_msg(b.wait_for(sess("SESS_TRAVEL")))[1:], ("CP_C", "MapC"))
+
+    def test_leave_notifies_and_stops_traffic(self):
+        a, b = self.client(), self.client()
+        a.send(P["CH_SESS"], P["SESS_LEAVE"])
+        left = b.wait_for(sess("SESS_PLAYER_LEFT"))
+        self.assertEqual(struct.unpack_from("<I", left, 6)[0], a.player_id)
+        a.send(P["CH_HERO"], P["HERO_HEAD_ROT"], b"\x11" * 8)
+        self.assertFalse([d for d in b.recv_all(0.2) if d[0] == P["CH_HERO"]])
+
+    def test_empty_room_forgets_world(self):
+        a = self.client()
+        a.send(P["CH_WORLD"], P["WORLD_DISCONNECT"])
+        time.sleep(0.05)
+        b = self.client(enter=False)
+        b.enter(cp="CP_Z", persist="MapZ")
+        self.assertEqual(world_msg(b.wait_for(sess("SESS_WORLD")))[1:], ("CP_Z", "MapZ"))
+
+    def test_malformed_session_packets(self):
+        a = self.client()
+        for body in (b"", b"\x00", b"\x01\x00\x00", b"\x01\x00\x00\xff", b"\x01\x00\x00\x01a\x7fb",
+                     b"\x01\x00\x00\x00\x00", b"\xff" * 300):
+            a.send(P["CH_SESS"], P["SESS_ENTER"], body)
+            a.send(P["CH_SESS"], P["SESS_CHECKPOINT"], body)
+        self.assert_alive(a)
 
     def test_transport_unit(self):
         exe = os.path.join(self.build_dir, "test_transport")
@@ -350,9 +467,11 @@ class RelayTest(unittest.TestCase):
         a = self.client()
         lengths = [0, 1, 2, 6, 7, 11, 12, 13, 17, 18, 26, 27, 64, 255, 256, 513, 1100]
         for i in range(30000):
-            channel = rng.randint(0, 5)
+            channel = rng.randint(0, 6)
             ptype = rng.randint(0, 0x12)
             if channel == P["CH_WORLD"] and ptype == P["WORLD_DISCONNECT"]:
+                continue
+            if channel == P["CH_SESS"] and ptype == P["SESS_LEAVE"]:
                 continue
             a.send(channel, ptype, rng.randbytes(rng.choice(lengths)))
             if i % 40 == 0:

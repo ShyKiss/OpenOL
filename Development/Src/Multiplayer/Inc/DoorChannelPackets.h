@@ -59,7 +59,7 @@ struct FDoorOpenPacket
 #define DOOR_OPEN_SIZE  (2 + sizeof(FDoorOpenPacket))
 #define DOOR_CLOSE_SIZE DOOR_OPEN_SIZE
 
-// DOOR_ANGLE / DOOR_INIT — initial angle snapshot.
+// DOOR_ANGLE — angle snapshot.
 // [CH_DOOR][DOOR_ANGLE/INIT][FDoorAnglePacket]  Total: 2 + 16 = 18 bytes
 #pragma pack(push, 1)
 struct FDoorAnglePacket
@@ -69,7 +69,6 @@ struct FDoorAnglePacket
 };
 #pragma pack(pop)
 #define DOOR_ANGLE_SIZE (2 + sizeof(FDoorAnglePacket))
-#define DOOR_INIT_SIZE  DOOR_ANGLE_SIZE
 
 // DOOR_PARAMS — sent before SMT for door SMTs 29-36.
 // [CH_DOOR][DOOR_PARAMS][FDoorParamsPacket]  Total: 2 + 4 = 6 bytes

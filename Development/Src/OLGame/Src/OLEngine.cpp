@@ -396,6 +396,9 @@ void UOLEngine::SaveCheckpointImmediate(FName CheckpointName)
 
 void UOLEngine::SaveCheckpoint(FName CheckpointName, UBOOL bSaveToDisk)
 {
+	extern void MpSession_OnCheckpointReached(FName);
+	MpSession_OnCheckpointReached(CheckpointName);
+
 	AOLGame* olGame = Utils::GetOLGame();
 
 	if (Utils::IsDemo() || (olGame && olGame->DifficultyMode == EDM_Insane))

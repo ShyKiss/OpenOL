@@ -15,6 +15,176 @@
 extern FMpConnectionTicker* GMpTicker;
 
 
+// ============================================================================
+// World session
+// ============================================================================
+
+static void PutWorldStr(BYTE* B, INT& N, const FString& Str)
+{
+    const INT Len = Min(Str.Len(), 127);
+    B[N++] = (BYTE)Len;
+    for (INT i = 0; i < Len; i++)
+        B[N++] = (BYTE)((*Str)[i] & 0x7F);
+}
+
+// Returns the offset after the string, or -1 if it does not fit.
+static INT ReadWorldStr(const BYTE* Data, INT DataLen, INT Off, FString& Out)
+{
+    if (Off >= DataLen) return -1;
+    const INT Len = Data[Off++];
+    if (Off + Len > DataLen) return -1;
+    Out = TEXT("");
+    for (INT i = 0; i < Len; i++)
+        Out += (TCHAR)(Data[Off + i] & 0x7F);
+    return Off + Len;
+}
+
+// The persistent level identifies the world: after PrepareMapChange GWorld keeps its
+// old package name, so only the checkpoint knows which map we are really on.
+static FString PersistentLevelOf(const FString& CheckpointName)
+{
+    AOLCheckpoint* CP = CheckpointName.Len() > 0 ? Utils::GetCheckpointFromName(FName(*CheckpointName)) : NULL;
+    if (CP && CP->PersistentLevelName != NAME_None)
+        return CP->PersistentLevelName.ToString();
+    return GWorld ? GWorld->GetOutermost()->GetName() : FString();
+}
+
+static FString CurrentCheckpointName()
+{
+    const FName CP = GWorld && GWorld->GetGameInfo() ? Utils::GetCurrentCheckpointName() : NAME_None;
+    return CP != NAME_None ? CP.ToString() : FString();
+}
+
+static void SendSessionEnter(BYTE Flags, const FString& Checkpoint)
+{
+    BYTE B[5 + 2 * 128];
+    INT N = 0;
+    B[N++] = CH_SESS;
+    B[N++] = SESS_ENTER;
+    B[N++] = (BYTE)(GMpConn.WorldEpoch & 0xFF);
+    B[N++] = (BYTE)(GMpConn.WorldEpoch >> 8);
+    B[N++] = Flags;
+    PutWorldStr(B, N, Checkpoint);
+    PutWorldStr(B, N, PersistentLevelOf(Checkpoint));
+    GMpConn.SendBinary(B, N);
+    GMpConn.LastReportedCheckpoint = Checkpoint;
+}
+
+// Called from AOLPlayerController::StartNewGameAtCheckpoint.
+void MpSession_OnStartAtCheckpoint(const FString& Checkpoint)
+{
+    // The connection outlives the multiplayer game: single player must not touch the room.
+    if (!GMultiplayerController || !GMpConn.bIsConnected || !GMpConn.bIsHandshaked)
+        return;
+    if (GMpConn.TravelCheckpoint == Checkpoint)
+    {
+        // Following SESS_TRAVEL: the respawn reports SESS_ENTER, nothing is being replaced.
+        GMpConn.TravelCheckpoint = TEXT("");
+        return;
+    }
+    SendSessionEnter(SESS_ENTER_RESET, Checkpoint);
+    GMpConn.bSkipNextEnter = TRUE;
+}
+
+// Called from UOLEngine::SaveCheckpoint.
+void MpSession_OnCheckpointReached(FName Checkpoint)
+{
+    if (!GMultiplayerController || !GMpConn.bIsConnected || !GMpConn.bIsHandshaked || GMpConn.WorldEpoch == 0)
+        return;
+    const FString Name = Checkpoint.ToString();
+    if (Name == GMpConn.LastReportedCheckpoint)
+        return;
+    GMpConn.LastReportedCheckpoint = Name;
+
+    BYTE B[2 + 2 * 128];
+    INT N = 0;
+    B[N++] = CH_SESS;
+    B[N++] = SESS_CHECKPOINT;
+    PutWorldStr(B, N, Name);
+    PutWorldStr(B, N, PersistentLevelOf(Name));
+    GMpConn.SendBinary(B, N);
+}
+
+// Same steps as the checkpoint tab: cross-map travel goes through PrepareMapChange,
+// PlayerTick starts the checkpoint once its actor exists.
+static UBOOL ApplyTravel()
+{
+    AOLGame* Game = GWorld ? Cast<AOLGame>(GWorld->GetGameInfo()) : NULL;
+    if (!Game)
+        return FALSE;
+
+    GMpConn.bTravelPending = FALSE;
+    const FString Checkpoint = GMpConn.TravelCheckpoint;
+    const FString Persist    = GMpConn.TravelPersist;
+    debugf(NAME_Log, TEXT("[MP] Travel: cp='%s' persist='%s' epoch=%d"), *Checkpoint, *Persist, (INT)GMpConn.WorldEpoch);
+
+    if (Checkpoint.Len() == 0)
+    {
+        if (GWorld->GetOutermost()->GetName() != Persist)
+            GEngine->Exec(*FString::Printf(TEXT("open %s?game=Multiplayer.MultiplayerGame"), *Persist));
+        else if (GMultiplayerHero)
+            SendSessionEnter(0, Checkpoint);
+        return TRUE;
+    }
+    if (Checkpoint == CurrentCheckpointName() && Persist == PersistentLevelOf(Checkpoint))
+    {
+        GMpConn.TravelCheckpoint = TEXT("");
+        SendSessionEnter(0, Checkpoint);
+        return TRUE;
+    }
+
+    Game->PendingCheckpointName = FName(*Checkpoint);
+    for (FActorIterator It; It; ++It)
+    {
+        AOLCheckpoint* CP = Cast<AOLCheckpoint>(*It);
+        if (CP && !CP->IsPendingKill() && CP->CheckpointName == Game->PendingCheckpointName)
+            return TRUE;
+    }
+    UGameEngine* GameEngine = Cast<UGameEngine>(GEngine);
+    if (GameEngine)
+    {
+        TArray<FName> LevelNames;
+        LevelNames.AddItem(FName(*Persist));
+        GameEngine->PrepareMapChange(LevelNames);
+        GameEngine->bShouldCommitPendingMapChange = TRUE;
+    }
+    return TRUE;
+}
+
+static void HandleSessionPacket(AMultiplayerController* Controller, BYTE Type, BYTE* Payload, INT PayloadLen)
+{
+    switch (Type)
+    {
+    case SESS_WORLD:
+    case SESS_TRAVEL:
+    {
+        if (PayloadLen < 2) return;
+        FString Checkpoint, Persist;
+        INT Off = ReadWorldStr(Payload, PayloadLen, 2, Checkpoint);
+        if (Off < 0 || ReadWorldStr(Payload, PayloadLen, Off, Persist) < 0) return;
+        GMpConn.WorldEpoch = (WORD)(Payload[0] | (Payload[1] << 8));
+        if (Type == SESS_WORLD)
+        {
+            debugf(NAME_Log, TEXT("[MP] In world: cp='%s' persist='%s' epoch=%d"), *Checkpoint, *Persist, (INT)GMpConn.WorldEpoch);
+            break;
+        }
+        GMpConn.TravelCheckpoint = Checkpoint;
+        GMpConn.TravelPersist    = Persist;
+        GMpConn.bTravelPending   = TRUE;
+        ApplyTravel();
+        break;
+    }
+    case SESS_BASELINE_END:
+        debugf(NAME_Log, TEXT("[MP] Baseline received"));
+        break;
+    case SESS_PLAYER_LEFT:
+        if (PayloadLen >= 4)
+            Controller->eventOnPlayerDisconnected((INT)((DWORD)Payload[0] | ((DWORD)Payload[1]<<8) | ((DWORD)Payload[2]<<16) | ((DWORD)Payload[3]<<24)));
+        break;
+    default: break;
+    }
+}
+
 void AMultiplayerController::NativeInit()
 {
     debugf(TEXT("[MP] NativeInit"));
@@ -78,6 +248,12 @@ void AMultiplayerController::NativeInit()
 
 void AMultiplayerController::NativeDestroyed()
 {
+    if (GMpConn.bIsConnected)
+    {
+        BYTE B[2] = { CH_SESS, SESS_LEAVE };
+        GMpConn.SendBinary(B, 2);
+    }
+    GMpConn.WorldEpoch = 0;
     GMultiplayerController            = NULL;
     GMultiplayerHero                  = NULL;
     GHeroChannelTicker.Channel        = NULL;
@@ -92,6 +268,14 @@ void AMultiplayerController::NativeDestroyed()
 void AMultiplayerController::NativeSetHero(AOLHero* Hero)
 {
     GMultiplayerHero = Hero;
+    if (!Hero || !IsConnected())
+        return;
+    if (GMpConn.bTravelPending && ApplyTravel())
+        return;
+    if (GMpConn.bSkipNextEnter)
+        GMpConn.bSkipNextEnter = FALSE;
+    else
+        SendSessionEnter(0, CurrentCheckpointName());
 }
 
 UBOOL AMultiplayerController::IsConnected()
@@ -150,6 +334,11 @@ void AMultiplayerController::OnConnected()
     for (INT i = 0; i < NickLen; i++)
         B[N++] = (BYTE)((*Nick)[i] & 0x7F);
     GMpConn.SendBinary(B, N);
+
+    GMpConn.WorldEpoch = 0;
+    GMpConn.bSkipNextEnter = FALSE;
+    if (GMultiplayerHero)
+        SendSessionEnter(0, CurrentCheckpointName());
 }
 
 void AMultiplayerController::OnDisconnected()
@@ -359,6 +548,10 @@ void AMultiplayerController::OnReceiveBinaryData(BYTE PktType, INT SenderID, BYT
 
     case CH_WORLD:
         if (WorldChannel) WorldChannel->OnBinaryWorldPacket(SenderID, Type, Payload, PayloadLen);
+        break;
+
+    case CH_SESS:
+        HandleSessionPacket(this, Type, Payload, PayloadLen);
         break;
 
     default: break;

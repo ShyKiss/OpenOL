@@ -377,7 +377,7 @@ void FMpConnection::HandleMessage(BYTE* Data, INT Count)
         }
 
         // --- Client-originated game packets: [channel(1)][type(1)][sender_id LE4][payload...] ---
-        if (FirstByte <= 0x05)
+        if (FirstByte <= OL_CHANNEL_MAX)
         {
             if (Count < 6) return;
             BYTE  Channel    = FirstByte;
