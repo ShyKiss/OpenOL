@@ -104,8 +104,19 @@ static TMap<FString, FSentEnemyAnim> GSentEnemyAnims;
 UBOOL MpWorld_AllowFactorySpawn(UActorFactory* Factory, UBOOL bObserverOnly)
 {
     if (GMpConn.bIsConnected && GMpConn.SyncEnemies && Factory && Factory->IsA(UActorFactoryOLAI::StaticClass()))
-        return IsEnemyAuthority();
-    return !bObserverOnly;
+    {
+        const UBOOL bAllow = IsEnemyAuthority();
+        debugf(NAME_Log, TEXT("[MP] Enemy factory %s: %s"), *Factory->GetName(), bAllow ? TEXT("spawn") : TEXT("not the owner"));
+        return bAllow;
+    }
+    if (!bObserverOnly)
+        return TRUE;
+    // Cutscene props: a scene often shows an enemy as a skeletal mesh actor until the real
+    // one appears. Purely visual and local, and without it an observer sees no animation.
+    const UBOOL bProp = Factory && (Factory->IsA(UActorFactorySkeletalMesh::StaticClass())
+                                 || Factory->IsA(UActorFactoryPhysicsAsset::StaticClass()));
+    debugf(NAME_Log, TEXT("[MP] Observer factory %s: %s"), Factory ? *Factory->GetName() : TEXT("NULL"), bProp ? TEXT("spawn prop") : TEXT("blocked"));
+    return bProp;
 }
 
 // Debug spawns from the Spawns tab and cheats are local to whoever asked for them.
@@ -155,6 +166,14 @@ static void PromoteDummyEnemies(AMultiplayerController* Ctrl)
                 Real->eventApplyModifiers(Real->Modifiers);
                 if (Dummy->NetMeshPath.Len() > 0)
                     CallSetNetMesh(Real, Dummy->NetMeshPath);
+                // Without its behavior tree the bot would stand still.
+                if (Dummy->BehaviorTree)
+                    Real->BehaviorTree = Dummy->BehaviorTree;
+                if (Dummy->VOAsset)
+                {
+                    Real->VOAsset = Dummy->VOAsset;
+                    Real->InitContextualVO();
+                }
             }
             else
             {
@@ -263,6 +282,10 @@ static void SendEnemyAnim(AOLEnemyPawn* E)
     const UBOOL bRestarted = Seq && Sent && !Seq->bLooping && Pos + 0.05f < Sent->LastPos;
     if (Sent)
         Sent->LastPos = Pos;
+    // A special move may animate through a blend node this does not see, and it has its
+    // own stop (ENEMY_SMT 0). Stopping here would cut a throw short.
+    if (!Seq && E->SpecialMove != 0)
+        return;
     if (Sent ? (Sent->Key == Key && !bRestarted) : Key.Len() == 0)
         return;
 
@@ -274,6 +297,7 @@ static void SendEnemyAnim(AOLEnemyPawn* E)
     NewSent.Key = Key;
     NewSent.LastPos = Pos;
     GSentEnemyAnims.Set(*EName, NewSent);
+    debugf(NAME_Log, TEXT("[MP] Enemy anim %s: %s"), *EName, Key.Len() > 0 ? *Key : TEXT("stop"));
 
     BYTE B[512];
     INT  N = 0;
@@ -282,7 +306,9 @@ static void SendEnemyAnim(AOLEnemyPawn* E)
     N = PutStr(B, N, EName);
     if (Seq)
     {
-        N = PutU8 (B, N, Seq->bLooping ? ENEMY_ANIM_LOOP : 0);
+        const UBOOL bRootMotion = Seq->RootBoneOption[0] != RBA_Default
+            || Seq->RootBoneOption[1] != RBA_Default || Seq->RootBoneOption[2] != RBA_Default;
+        N = PutU8 (B, N, (Seq->bLooping ? ENEMY_ANIM_LOOP : 0) | (bRootMotion ? ENEMY_ANIM_ROOT : 0));
         N = PutStr(B, N, SlotName);
         N = PutStr(B, N, SetPath, 127);
         N = PutStr(B, N, AnimName);
@@ -339,11 +365,25 @@ static void ApplyEnemyAnim(AOLEnemyPawn* Dummy, BYTE* Data, INT DataLen, INT Off
     }
 
     const FName Anim(*AnimName);
-    Slot->PlayCustomAnim(Anim, Rate, 0.2f, 0.2f, (Flags & ENEMY_ANIM_LOOP) != 0, TRUE);
     UAnimNodeSequence* Seq = Slot->GetCustomAnimNodeSeq();
-    // Skips the start for a late joiner, and a special move already started this anim.
-    if (Seq && Pos > 0.05f)
-        Seq->SetPosition(Pos, FALSE);
+    // A special move usually started this animation a moment ago: do not restart it.
+    if (Slot->bIsPlayingCustomAnim && Seq && Seq->AnimSeqName == Anim && Abs(Seq->CurrentTime - Pos) < 0.5f)
+        return;
+
+    if (Slot->PlayCustomAnim(Anim, Rate, 0.2f, 0.2f, (Flags & ENEMY_ANIM_LOOP) != 0, TRUE) <= 0.f)
+        debugf(NAME_Log, TEXT("[MP] Enemy anim not found on %s: %s (set '%s')"), *Dummy->GetName(), *AnimName, *SetPath);
+    Seq = Slot->GetCustomAnimNodeSeq();
+    if (Seq)
+    {
+        // The network already moves the dummy; the bone must not move it a second time.
+        const BYTE RootOption = (Flags & ENEMY_ANIM_ROOT) ? RBA_Discard : RBA_Default;
+        Seq->RootBoneOption[0] = RootOption;
+        Seq->RootBoneOption[1] = RootOption;
+        Seq->RootBoneOption[2] = RootOption;
+        // Skips the start for a late joiner.
+        if (Pos > 0.05f)
+            Seq->SetPosition(Pos, FALSE);
+    }
     if (Slot == Dummy->FullBodyAnimSlot)
         Dummy->bIsAnimatingFullBody = TRUE;
 }
@@ -392,7 +432,7 @@ void UEnemyChannel::SendSpawn(AOLEnemyPawn* E)
 
     // Layout: [type(1)][name][class][X(4)][Y(4)][Z(4)][Yaw(2)][mesh][weapon(1)][bColor(1)]
     //         if bColor: [R(2)][G(2)][B(2)][A(2)]  (each * 1000, as I16)
-    BYTE B[512];
+    BYTE B[640];
     INT  N = 0;
     N = PutU8 (B, N, CH_ENEMY);
     N = PutU8 (B, N, ENEMY_SPAWN);
@@ -416,6 +456,13 @@ void UEnemyChannel::SendSpawn(AOLEnemyPawn* E)
     {
         N = PutU8(B, N, 0);
     }
+    // What the factory gave this enemy, needed if another client takes over its AI.
+    // Dropped rather than cut if the packet would not fit in a server snapshot.
+    const FString TreePath = E->BehaviorTree ? E->BehaviorTree->GetPathName() : FString();
+    const FString VOPath   = E->VOAsset ? E->VOAsset->GetPathName() : FString();
+    const UBOOL bFits = N + 2 + TreePath.Len() + VOPath.Len() <= 500;
+    N = PutStr(B, N, bFits ? TreePath : FString(), 127);
+    N = PutStr(B, N, bFits ? VOPath : FString(), 127);
     GMpConn.SendBinary(B, N);
 }
 
@@ -760,7 +807,8 @@ static void ApplySpawn(UEnemyChannel* Ch, INT SenderID,
     const FString& EnemyName, const FString& ClassName,
     FLOAT IX, FLOAT IY, FLOAT IZ, INT Yaw,
     const FString& MeshPath, INT WeaponIdx,
-    UBOOL bHasColor, FLOAT CR, FLOAT CG, FLOAT CB, FLOAT CA)
+    UBOOL bHasColor, FLOAT CR, FLOAT CG, FLOAT CB, FLOAT CA,
+    const FString& TreePath, const FString& VOPath)
 {
     AMultiplayerController* Ctrl = Ch->ControllerOwner;
     if (!Ctrl || !GMpConn.SyncEnemies) return;
@@ -810,6 +858,12 @@ static void ApplySpawn(UEnemyChannel* Ch, INT SenderID,
             }
 
             CallBuildScriptAnimSetList(NetEnemy);
+
+            // Unused on a dummy (it has no bot): kept for the takeover.
+            if (TreePath.Len() > 0)
+                NetEnemy->BehaviorTree = LoadObject<UOLBTBehaviorTree>(NULL, *TreePath, NULL, LOAD_None, NULL);
+            if (VOPath.Len() > 0)
+                NetEnemy->VOAsset = LoadObject<UOLAIContextualVOAsset>(NULL, *VOPath, NULL, LOAD_None, NULL);
         }
     }
 
@@ -1114,9 +1168,12 @@ void UEnemyChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT D
             CR = IR / 1000.0f; CG = IG / 1000.0f;
             CB = IB / 1000.0f; CA = IA / 1000.0f;
         }
+        FString TreePath, VOPath;
+        if (Off < DataLen) Off = ReadStr(Data, Off, DataLen, TreePath);
+        if (Off < DataLen) Off = ReadStr(Data, Off, DataLen, VOPath);
         ApplySpawn(this, SenderID, EnemyName, ClassName,
             IX, IY, IZ, Yaw, MeshPath, Weapon,
-            HasColor != 0, CR, CG, CB, CA);
+            HasColor != 0, CR, CG, CB, CA, TreePath, VOPath);
         break;
     }
     case ENEMY_DEL:
