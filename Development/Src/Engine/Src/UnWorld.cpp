@@ -2131,6 +2131,9 @@ static void AsyncLevelLoadCompletionCallback( UObject* LevelPackage, void* /*Unu
 }
  
 
+// Set via OLCheatManager::ToggleDisableUnloadStreaming; declared in UnLevTic.cpp.
+extern UBOOL GDisableStreamingVolumeUnload;
+
 /**
  * Updates the world based on the current view location of the player and sets level LODs accordingly.
  *
@@ -2310,6 +2313,15 @@ void UWorld::UpdateLevelStreaming( FSceneViewFamily* ViewFamily )
 						}
 					}
 						
+					// Apply 00_Replace mod substitutions for this streaming level.
+					{
+						extern void OLUtils_ApplyMapReplacements(TArray<FName>&);
+						TArray<FName> Names;
+						Names.AddItem(StreamingLevel->PackageName);
+						OLUtils_ApplyMapReplacements(Names);
+						StreamingLevel->PackageName = Names(0);
+					}
+
 					// Kick off async load request.
 					UObject::LoadPackageAsync( *StreamingLevel->PackageName.ToString(), AsyncLevelLoadCompletionCallback, NULL );
 					
@@ -2374,7 +2386,11 @@ void UWorld::UpdateLevelStreaming( FSceneViewFamily* ViewFamily )
 #endif
 			}
 			// Level was visible before but no longer should be.
-			else if( !bShouldBeVisible && StreamingLevel->bIsVisible )
+			// GDisableStreamingVolumeUnload is a blanket override: once a level is visible,
+			// nothing (streaming volumes, Kismet, LevelStreamingDistance, ...) may hide it
+			// again while the flag is set, regardless of which caller decided bShouldBeVisible
+			// should now be FALSE.
+			else if( !bShouldBeVisible && StreamingLevel->bIsVisible && !GDisableStreamingVolumeUnload )
 			{
 				// Hide this level/ remove from world. Updates bIsVisible.
 				RemoveFromWorld( StreamingLevel );

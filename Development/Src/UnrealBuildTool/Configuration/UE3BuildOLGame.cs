@@ -96,6 +96,7 @@ namespace UnrealBuildTool
 			GameProjects.Add(new UE3ProjectDesc("OLGame/OLGame.vcxproj"));
             GameCPPEnvironment.IncludePaths.Add("OLGame/Inc");
             GameCPPEnvironment.IncludePaths.Add("Multiplayer/Inc");
+            GameCPPEnvironment.IncludePaths.Add("TASGame/Inc");
 
 			if (UE3BuildConfiguration.bBuildEditor &&
 				(GameCPPEnvironment.TargetPlatform == CPPTargetPlatform.Win32 || GameCPPEnvironment.TargetPlatform == CPPTargetPlatform.Win64))

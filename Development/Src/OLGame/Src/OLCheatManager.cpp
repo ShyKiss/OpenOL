@@ -1,5 +1,6 @@
 #include "OLGame.h"
 #include "OLImGui_Tabs.h"
+#include "OLQuickSave.h"
 
 IMPLEMENT_CLASS(UOLCheatManager);
 
@@ -8,6 +9,9 @@ UBOOL GDelayedSingleStep = FALSE;
 UBOOL GDelayedPause = FALSE;
 
 extern UBOOL GShowEditorSprites;
+extern UBOOL GImprovedAI;
+extern UBOOL GCinematicSensitivity;
+extern UBOOL GDisableStreamingVolumeUnload;
 
 void UOLCheatManager::SetShowEditorSprites(UBOOL bShow)
 {
@@ -192,6 +196,62 @@ void UOLCheatManager::ResetWorldState()
 	}
 }
 
+void UOLCheatManager::ToggleDisableUnloadStreaming()
+{
+	if (!bCheatsEnabled)
+	{
+		return;
+	}
+
+	GDisableStreamingVolumeUnload = !GDisableStreamingVolumeUnload;
+
+	if (GDisableStreamingVolumeUnload && GWorld)
+	{
+		// Only pin levels that are already loaded right now - don't kick off loading
+		// (and thus streaming in) levels the player hasn't reached yet.
+		AWorldInfo* Info = GWorld->GetWorldInfo();
+		if (Info)
+		{
+			for (INT i = 0; i < Info->StreamingLevels.Num(); ++i)
+			{
+				ULevelStreaming* LevelStreamingObject = Info->StreamingLevels(i);
+				if (LevelStreamingObject && LevelStreamingObject->LoadedLevel)
+				{
+					LevelStreamingObject->bShouldBeLoaded  = TRUE;
+					LevelStreamingObject->bShouldBeVisible = TRUE;
+				}
+			}
+		}
+	}
+
+	AOLPlayerController* OLPC = Utils::GetOLPC();
+	if (OLPC)
+	{
+		OLPC->eventClientMessage(GDisableStreamingVolumeUnload
+			? TEXT("Streaming volume unload: DISABLED (levels forced loaded)")
+			: TEXT("Streaming volume unload: enabled"));
+	}
+}
+
+void UOLCheatManager::ToggleIgnoreLedgeMarkerCanSlide()
+{
+	if (!bCheatsEnabled)
+	{
+		return;
+	}
+
+	extern UBOOL GIgnoreLedgeMarkerCanSlide;
+	GIgnoreLedgeMarkerCanSlide = !GIgnoreLedgeMarkerCanSlide;
+
+	AOLPlayerController* OLPC = Utils::GetOLPC();
+	if (OLPC)
+	{
+		OLPC->eventClientMessage(GIgnoreLedgeMarkerCanSlide
+			? TEXT("SMT_SlideOver: ignoring OLLedgeMarker::bCanSlide (ON)")
+			: TEXT("SMT_SlideOver: respecting OLLedgeMarker::bCanSlide (OFF)"));
+	}
+}
+
 
 void UOLCheatManager::ApplyCP(const FString& CPName)
 {
@@ -313,6 +373,44 @@ void UOLCheatManager::ToggleMute()
 	{
 		AudioDevice->SetRTPCValue(TEXT("MASTER_VOLUME"), bMuted ? 0.0f : 100.0f, NULL);
 	}
+}
+
+void UOLCheatManager::ToggleCinematicSensitivity()
+{
+	if (!bCheatsEnabled)
+		return;
+
+	GCinematicSensitivity = !GCinematicSensitivity;
+
+	AOLPlayerController* OLPC = GetOuterAOLPlayerController();
+	OLPC->eventClientMessage(GCinematicSensitivity ? TEXT("CinematicSensitivity: ON") : TEXT("CinematicSensitivity: OFF"));
+}
+
+void UOLCheatManager::QuickSave()
+{
+	if (!bCheatsEnabled)
+		return;
+
+	OLQuickSave_Save();
+}
+
+void UOLCheatManager::QuickLoad()
+{
+	if (!bCheatsEnabled)
+		return;
+
+	OLQuickSave_Load();
+}
+
+void UOLCheatManager::ToggleImprovedAI()
+{
+	if (!bCheatsEnabled)
+		return;
+
+	GImprovedAI = !GImprovedAI;
+
+	AOLPlayerController* OLPC = GetOuterAOLPlayerController();
+	OLPC->eventClientMessage(GImprovedAI ? TEXT("ImprovedAI: ON") : TEXT("ImprovedAI: OFF"));
 }
 
 void UOLCheatManager::AddDebugTrajectoryPoint(FDebugTrajectoryPoint point)

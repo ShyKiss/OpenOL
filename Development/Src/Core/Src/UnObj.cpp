@@ -960,6 +960,7 @@ void UObject::SetLinker( ULinkerLoad* LinkerLoad, INT LinkerIndex )
 	_LinkerIndex = LinkerIndex;
 }
 
+
 /**
  * Returns the version of the linker for this object.
  *

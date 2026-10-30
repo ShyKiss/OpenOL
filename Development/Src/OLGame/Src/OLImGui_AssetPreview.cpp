@@ -12,8 +12,9 @@
 #include "PreviewScene.h"
 #include "OLImGui_AssetPreview.h"
 
-// Forward-declared here to avoid circular include; defined in OLImGui_Spawns.cpp.
+// Forward-declared here to avoid circular include; defined in OLImGui_Spawns*.cpp.
 void OLSpawns_ShutdownPreviews();
+void OLSpawns_ShutdownProps();
 
 #include "..\..\D3D9Drv\Inc\D3D9Resources.h"
 #include "..\..\D3D9Drv\Inc\D3D9RenderTarget.h"
@@ -80,6 +81,10 @@ void OLPreview_ShutdownSystem()
     // OLSpawns_ShutdownPreviews() handles GPreviewMain + GPreviewHover + GPreviewWeapon
     // in one place. Instances are lazy-Init()'d again on the next tick.
     OLSpawns_ShutdownPreviews();
+    OLSpawns_ShutdownProps();
+    // Editor-spawned test actors (props/doors/lights/enemies) don't belong on the
+    // next map — despawn them here too, not just their UI-side caches/lists.
+    OLSpawns_DespawnTestActors();
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +145,30 @@ static bool ReadbackTexture(IDirect3DTexture9* Tex, UINT Size,
     return SUCCEEDED(hr);
 }
 
+// Request full mips for everything the mesh uses.  Deliberately does NOT call
+// UTexture2D::WaitForStreaming(): that busy-waits (appSleep(0)) on the game thread
+// until the mips land, which is what makes the preview hitch on some entries and
+// not others depending on what is already resident.  The streaming manager brings
+// the mips in over the next few frames on its own.
+static void ForceStreamMeshTextures(UMeshComponent* Comp)
+{
+    if (!Comp) return;
+    const INT NumElem = Comp->GetNumElements();
+    for (INT i = 0; i < NumElem; ++i)
+    {
+        UMaterialInterface* Mat = Comp->GetMaterial(i);
+        if (!Mat) continue;
+        TArray<UTexture*> Textures;
+        Mat->GetUsedTextures(Textures, MSQ_UNSPECIFIED, TRUE);
+        for (INT t = 0; t < Textures.Num(); ++t)
+        {
+            UTexture2D* Tex = Cast<UTexture2D>(Textures(t));
+            if (Tex)
+                Tex->SetForceMipLevelsToBeResident(30.f);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FImpl — per-instance data
 // ---------------------------------------------------------------------------
@@ -182,6 +211,10 @@ struct FOLPreviewInstance::FImpl
     // Must be owned by SkeletalComp so InitAnimTree binds SkelComponent correctly.
     UAnimNodeSequence*       AnimNode;
 
+    // Render throttle: re-render only every RenderInterval ticks.
+    int                      TicksSinceRender;
+    int                      RenderInterval;   // 1 = every frame, N = every N frames
+
     FImpl()
         : Scene(NULL), SkeletalComp(NULL), StaticComp(NULL)
         , PreviewType(PT_None)
@@ -192,6 +225,7 @@ struct FOLPreviewInstance::FImpl
         , ChromaTexture(NULL)
         , WeaponComp(NULL), bWeaponAttached(false)
         , AnimNode(NULL)
+        , TicksSinceRender(0), RenderInterval(1)
     {
         for (int i = 0; i < OL_PREVIEW_MAX_ATTACHMENTS; ++i)
         {
@@ -411,6 +445,13 @@ bool FOLPreviewInstance::IsInited() const
     return Impl && Impl->Scene != NULL;
 }
 
+void FOLPreviewInstance::SetRenderInterval(int N)
+{
+    if (!Impl) return;
+    Impl->RenderInterval    = N > 1 ? N : 1;
+    Impl->TicksSinceRender  = 0;
+}
+
 void FOLPreviewInstance::SetSkeletalMesh(USkeletalMesh* Mesh)
 {
     if (!Impl || !Impl->Scene || !Impl->SkeletalComp) return;
@@ -423,44 +464,62 @@ void FOLPreviewInstance::SetSkeletalMesh(USkeletalMesh* Mesh)
     FMatrix LocalToWorld = FTranslationMatrix(-Mesh->Bounds.Origin);
     I.Scene->AddComponent(I.SkeletalComp, LocalToWorld);
     I.SkeletalComp->UpdateBounds();
+    ForceStreamMeshTextures(I.SkeletalComp);
     I.PreviewType = PT_Skeletal;
 }
 
-void FOLPreviewInstance::SetSkeletalMeshWithAnim(USkeletalMesh* Mesh, const char* AnimSetPkg, const char* AnimSetObj, const char* IdleAnimName)
+void FOLPreviewInstance::ApplyAnimSet(UAnimSet* AnimSet, const char* IdleAnimName)
 {
-    SetSkeletalMesh(Mesh);
-    if (!Impl || !Impl->Scene || !Mesh || !AnimSetObj || !AnimSetObj[0]) return;
+    if (!Impl || !Impl->Scene || !Impl->SkeletalComp || !AnimSet || !IdleAnimName) return;
     FImpl& I = *Impl;
 
-    // Load the AnimSet via the universal mod package loader.
-    UObject* Loaded = Utils::LoadObjectFromModPackage(
-        FString(ANSI_TO_TCHAR(AnimSetPkg)),
-        FString(ANSI_TO_TCHAR(AnimSetObj)),
-        UAnimSet::StaticClass());
-    UAnimSet* AnimSet = Loaded ? Cast<UAnimSet>(Loaded) : NULL;
-    if (!AnimSet) return;
-
-    // Release previous AnimNode if any.
     if (I.AnimNode) { I.AnimNode->RemoveFromRoot(); I.AnimNode = NULL; }
 
-    // Create a fresh AnimNodeSequence owned by this component.
-    // Ownership by SkeletalComp ensures InitAnimTree sets SkelComponent correctly.
     I.AnimNode = ConstructObject<UAnimNodeSequence>(
         UAnimNodeSequence::StaticClass(), I.SkeletalComp);
     I.AnimNode->AddToRoot();
-    I.AnimNode->bLooping                      = TRUE;
+    I.AnimNode->bLooping                       = TRUE;
     I.AnimNode->bDisableWarningWhenAnimNotFound = TRUE;
 
-    // Assign AnimSet and root node, then flush linkup cache and init the tree.
     I.SkeletalComp->AnimSets.Empty();
     I.SkeletalComp->AnimSets.AddItem(AnimSet);
     I.SkeletalComp->Animations = I.AnimNode;
     I.SkeletalComp->UpdateAnimations();
     I.SkeletalComp->InitAnimTree(TRUE);
 
-    // Start looping idle.
     I.AnimNode->SetAnim(FName(ANSI_TO_TCHAR(IdleAnimName)));
     I.AnimNode->PlayAnim(TRUE, 1.0f, 0.0f);
+}
+
+struct FAnimSetCallbackData
+{
+    FOLPreviewInstance* Instance;
+    char                IdleAnim[64];
+};
+
+static void OnAnimSetLoaded(UObject* Result, void* UserData)
+{
+    FAnimSetCallbackData* D = (FAnimSetCallbackData*)UserData;
+    UAnimSet* AnimSet = Result ? Cast<UAnimSet>(Result) : NULL;
+    if (AnimSet && D->Instance && D->Instance->IsInited())
+        D->Instance->ApplyAnimSet(AnimSet, D->IdleAnim);
+    delete D;
+}
+
+void FOLPreviewInstance::SetSkeletalMeshWithAnim(USkeletalMesh* Mesh, const char* AnimSetPkg, const char* AnimSetObj, const char* IdleAnimName)
+{
+    // Mesh is applied immediately so the preview shows geometry without waiting for the AnimSet.
+    SetSkeletalMesh(Mesh);
+    if (!Impl || !Impl->Scene || !Mesh || !AnimSetObj || !AnimSetObj[0]) return;
+
+    FAnimSetCallbackData* D = new FAnimSetCallbackData();
+    D->Instance = this;
+    appStrncpyANSI(D->IdleAnim, IdleAnimName ? IdleAnimName : "", ARRAY_COUNT(D->IdleAnim));
+    Utils::LoadObjectFromModPackageAsync(
+        FString(ANSI_TO_TCHAR(AnimSetPkg)),
+        FString(ANSI_TO_TCHAR(AnimSetObj)),
+        UAnimSet::StaticClass(),
+        OnAnimSetLoaded, D);
 }
 
 void FOLPreviewInstance::AttachWeaponToBone(UStaticMesh* Mesh, const char* BoneName)
@@ -479,6 +538,14 @@ void FOLPreviewInstance::AttachWeaponToBone(UStaticMesh* Mesh, const char* BoneN
     I.bWeaponAttached = true;
 }
 
+void FOLPreviewInstance::SetStaticMeshMaterial(INT Slot, UMaterialInterface* Mat)
+{
+    if (!Impl || !Impl->StaticComp || !Mat) return;
+    Impl->StaticComp->SetMaterial(Slot, Mat);
+    ForceStreamMeshTextures(Impl->StaticComp);
+}
+
+
 void FOLPreviewInstance::SetStaticMesh(UStaticMesh* Mesh)
 {
     if (!Impl || !Impl->Scene || !Impl->StaticComp) return;
@@ -490,6 +557,7 @@ void FOLPreviewInstance::SetStaticMesh(UStaticMesh* Mesh)
     I.StaticComp->Materials.Empty();
     FMatrix LocalToWorld = FTranslationMatrix(-Mesh->Bounds.Origin);
     I.Scene->AddComponent(I.StaticComp, LocalToWorld);
+    ForceStreamMeshTextures(I.StaticComp);
     I.PreviewType = PT_Static;
 }
 
@@ -500,7 +568,7 @@ void FOLPreviewInstance::Tick(float YawDeg, float FOVDeg)
     if (!I.Scene || !I.RTBlack || I.PreviewType == PT_None)
         return;
 
-    // Advance skeletal animation by one game tick.
+    // Advance skeletal animation every tick regardless of render throttle.
     if (I.PreviewType == PT_Skeletal && I.SkeletalComp && I.AnimNode)
     {
         // If the sequence wasn't found yet (AnimSet not ready), retry PlayAnim each tick.
@@ -526,6 +594,15 @@ void FOLPreviewInstance::Tick(float YawDeg, float FOVDeg)
         }
     }
 
+    // Throttle rendering: skip the GPU work when the quota hasn't expired.
+    if (I.RenderInterval > 1)
+    {
+        ++I.TicksSinceRender;
+        if (I.TicksSinceRender < I.RenderInterval)
+            return;
+        I.TicksSinceRender = 0;
+    }
+
     FTextureRenderTargetResource* RTResB = I.RTBlack->GameThread_GetRenderTargetResource();
     FTextureRenderTargetResource* RTResW = I.RTWhite->GameThread_GetRenderTargetResource();
     if (!RTResB || !RTResW) return;
@@ -546,7 +623,8 @@ void FOLPreviewInstance::Tick(float YawDeg, float FOVDeg)
 
     FRenderParams Base;
     Base.Scene       = I.Scene->GetScene();
-    Base.ShowFlags   = (SHOW_DefaultEditor & ~SHOW_ViewMode_Mask) | SHOW_ViewMode_Lit;
+    // Minimal flags: lit meshes only — no shadows, fog, post-process, AO, or particles.
+    Base.ShowFlags   = SHOW_Lighting | SHOW_StaticMeshes | SHOW_SkeletalMeshes | SHOW_ViewMode_Lit;
     Base.WorldTime   = GCurrentTime - GStartTime;
     Base.DeltaTime   = GDeltaTime;
     // Skeletal meshes need a tighter framing than static meshes.

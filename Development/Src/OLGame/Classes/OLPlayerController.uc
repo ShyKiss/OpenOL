@@ -401,7 +401,10 @@ var bool bApplyingRemoteDoorEvent;
 var bool   bPlacementMode;
 var bool   bPlacementConfirmPending;  // set by C++ InputKey on LMB; consumed by caller each tick
 var Actor  PlacementGhost;
-var float  PlacementYaw;    // current yaw offset, rotated by mouse wheel
+var float  PlacementYaw;      // current yaw offset, rotated by Shift+wheel
+var float  PlacementPitch;    // current pitch offset, rotated by Shift+Alt+wheel
+var float  PlacementRadius;   // light radius, adjusted by Alt+wheel
+var float  PlacementDistance; // max trace distance from camera, adjusted by plain wheel
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////
@@ -545,8 +548,19 @@ event BeginPlacementMode(Actor Ghost)
 
 	PlacementGhost            = Ghost;
 	PlacementYaw              = Rotation.Yaw;
+	PlacementPitch            = 0;
+	PlacementDistance         = 512;
 	bPlacementConfirmPending  = false;
 	bPlacementMode            = true;
+}
+
+// Detach ghost from placement mode without destroying it (used when confirming light placement).
+event DetachPlacementMode()
+{
+	PlacementGhost           = None;
+	PlacementRadius          = 0;
+	bPlacementConfirmPending = false;
+	bPlacementMode           = false;
 }
 
 event EndPlacementMode()
@@ -641,11 +655,13 @@ exec function ToggleCamcorder()
 exec function ZoomIn()
 {
 	Inputs.bPressedZoomIn = true;
+	FreeCamSpeedUp();
 }
 
 exec function ZoomOut()
 {
 	Inputs.bPressedZoomOut = true;
+	FreeCamSpeedDown();
 }
 
 simulated exec function StartZoomIn()

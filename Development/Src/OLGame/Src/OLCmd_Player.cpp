@@ -11,6 +11,9 @@
 #include "OLUtilities.h"
 #include "OLCmd_Player.h"
 
+extern UBOOL GCinematicSensitivity;
+extern FLOAT GCinematicSensitivityAlpha;
+
 // ---------------------------------------------------------------------------
 // State snapshot
 // ---------------------------------------------------------------------------
@@ -61,8 +64,8 @@ void OLCmd_Player_UpdateSnapshot()
     GOLPlayerState.bUnlimitedBatteries      = CM ? !!CM->bUnlimitedBatteries      : false;
     GOLPlayerState.MaxHealth                = PC->HeroPawn ? PC->HeroPawn->HealthMax : 100;
     GOLPlayerState.bCheckpointListAvailable = AOLCheckpointList::GetCheckpointList() != NULL;
-    UOLEngine* Eng = Cast<UOLEngine>(GEngine);
-    GOLPlayerState.bSmoothCamera = Eng ? !!Eng->bSmoothCamera : false;
+    GOLPlayerState.bCinematicSensitivity    = !!GCinematicSensitivity;
+    GOLPlayerState.CinematicSensitivityAlpha= GCinematicSensitivityAlpha;
     GOLPlayerState.FreeCamFOV        = PC->DebugFreeCamFOV;
     GOLPlayerState.FreeCamSpeed      = PC->DebugFreeCamSpeed;
     GOLPlayerState.DefaultFOV        = PC->HeroPawn ? PC->HeroPawn->DefaultFOV       : 90.f;
@@ -158,10 +161,14 @@ void OLCmd_SetHobblingIntensity(float Current, float Target)
     PC->HeroPawn->TargetHobblingIntensity = Target;
 }
 
-void OLCmd_ToggleSmoothCamera()
+void OLCmd_ToggleCinematicSensitivity()
 {
-    UOLEngine* Eng = Cast<UOLEngine>(GEngine);
-    if (Eng) Eng->SetSmoothCamera(!Eng->bSmoothCamera);
+    CallCMExec(TEXT("ToggleCinematicSensitivity"));
+}
+
+void OLCmd_SetCinematicSensitivityAlpha(float Alpha)
+{
+    GCinematicSensitivityAlpha = Alpha;
 }
 
 void OLCmd_SetFreeCamFOV(float FOV)

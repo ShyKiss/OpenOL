@@ -13,12 +13,22 @@ EShaderPlatform GCookingShaderPlatform = SP_PCD3D_SM3;
 /** Material quality to cook for, not meaningful unless GIsCooking is TRUE */
 EMaterialShaderQuality GCookingMaterialQuality = MSQ_HIGH;
 
-/** Force minimal shader compiling 
+/** Force minimal shader compiling
  *  Experimental: This is used for commandlets that do not need physical shaders for anything.
 **/
 #if !CONSOLE
 UBOOL GForceMinimalShaderCompilation = FALSE;
 #endif
+
+/**
+ * TRUE when no shader source is available to compile from (shipping build running
+ * off a cooked shader cache).  Compiling then can only fail, and FMaterial::CacheShaders
+ * releases the existing shader map before it tries, so a doomed compile leaves the
+ * material with no shader map at all.  With this set, static permutations resolve
+ * through FMaterial::InitShaderMap instead, which looks the map up in the cache and
+ * leaves the existing one alone when nothing is found.
+ */
+UBOOL GNoShaderSourceAvailable = TRUE;
 
 // Pull the shader cache stats into this context
 STAT_MAKE_AVAILABLE_FAST_MEMORY(STAT_ShaderCompression_CompressedShaderMemory);

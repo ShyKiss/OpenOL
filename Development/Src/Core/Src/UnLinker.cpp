@@ -184,6 +184,7 @@ INT FScopedCreateImportCounter::Counter = 0;
 /** TLS total linker call depth across all linker functions — catches cross-function recursion. */
 static __declspec(thread) INT GLinkerTotalDepth = 0;
 
+
 /** AssetLinker created by AssetRedir to load assets from the .upk alongside a .u script package.
  *  Script exports from this linker must be skipped to avoid duplicating incompatible old classes. */
 static ULinkerLoad* GAssetRedirLinker = NULL;
@@ -3267,15 +3268,22 @@ UBOOL ULinkerLoad::VerifyImportInner(INT ImportIndex, FString& WarningSuffix)
 	}
 	else
 	{
-		if (LinkerRoot->PackageFlags & PKG_Cooked)
+		if (!IS_IMPORT_INDEX(Import.OuterIndex) && Import.OuterIndex != ROOTPACKAGE_INDEX)
 		{
-			// outer can be an export if the package is cooked
-			if (!IS_IMPORT_INDEX(Import.OuterIndex))
+			// Export-outer import: object lives as a forced export in this same linker.
+			for (INT xi = 0; xi < ExportMap.Num(); ++xi)
 			{
-				// @todo: This is possibly not the right thing to do here!
-				// it could attempt to find the original PackageLinker from disk and use that
-				return FALSE;
+				if (ExportMap(xi).ObjectName == Import.ObjectName)
+				{
+					UObject* Obj = CreateExport(xi);
+					if (Obj)
+					{
+						Import.XObject = Obj;
+						return FALSE;
+					}
+				}
 			}
+			return FALSE;
 		}
 		else
 		{
@@ -4194,7 +4202,9 @@ UObject* ULinkerLoad::CreateExport( INT Index )
 		}
 
 		// editor loads force exported object from original package, not cooked package (unless we are script patching)
-		if (GIsEditor && !GIsScriptPatcherActive && Export.HasAnyFlags(EF_ForcedExport))
+		// Skip for cooked packages: their ForcedExports have no original package on disk.
+		if (GIsEditor && !GIsScriptPatcherActive && Export.HasAnyFlags(EF_ForcedExport)
+		&&  !(Summary.PackageFlags & PKG_Cooked))
 		{
 			const FName& ClassName = GetExportClassName(Index);
 			FName OuterClassName;
@@ -4660,7 +4670,7 @@ UObject* ULinkerLoad::CreateImport( INT Index )
 							}
 						}
 						// Export.
-						else 
+						else
 						{
 							// Create/ find the object's outer.
 							FindOuter = IndexToObject( Import.OuterIndex );
@@ -4690,7 +4700,7 @@ UObject* ULinkerLoad::CreateImport( INT Index )
 					}
 
 					if( FindObject )
-					{		
+					{
 						// Associate import and indicate that we associated an import for later cleanup.
 						Import.XObject = FindObject;
 						GImportCount++;

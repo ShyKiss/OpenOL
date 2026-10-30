@@ -2768,6 +2768,10 @@ UBOOL UGameEngine::PrepareMapChange(const TArray<FName>& LevelNames)
 		LevelsToLoadForPendingMapChange.Empty();
 		LevelsToLoadForPendingMapChange += LevelNames;
 
+		// Apply 00_Replace mod substitutions before validation and async load.
+		extern void OLUtils_ApplyMapReplacements(TArray<FName>&);
+		OLUtils_ApplyMapReplacements(LevelsToLoadForPendingMapChange);
+
 #if !FINAL_RELEASE
 		// Verify that all levels specified are in the package file cache.
 		FString Dummy;

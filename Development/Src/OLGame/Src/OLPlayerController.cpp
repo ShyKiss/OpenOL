@@ -13,6 +13,13 @@
 #endif
 
 #include "OLGame.h"
+
+UBOOL GCinematicSensitivity = FALSE;
+FLOAT GCinematicSensitivityAlpha = 0.08f; // exponential smoothing factor, tweakable via ImGui Player tab
+static FVector2D GSmoothedInput(0.f, 0.f);
+
+// Placement rotation step in unreal units. Default = 65536/16 = 4096 (22.5 deg).
+INT GPlacementRotStep = 65536 / 16;
 #include "OLUtilities.h"
 #include "..\..\OnlineSubsystemSteamworks\Inc\OnlineSubsystemSteamworks.h"
 #include "OpenOLGlobals.h"
@@ -20,6 +27,8 @@
 #include "UDKBaseAnimationClasses.h"
 #include "GameFrameworkAnimClasses.h"
 #include "OLGameAnimClasses.h"
+#include "OLImGui_LoadingOverlay.h"
+#include "OLQuickSave.h"
 
 #if WITH_ORBISCONTROLLEREMULATION
 #include "PCOrbisController.h"
@@ -93,6 +102,34 @@ UBOOL AOLPlayerController::Tick( FLOAT deltaSeconds, ELevelTick TickType )
 			eventStartNewGameAtCheckpoint(currentGame->PendingCheckpointName.ToString(), FALSE);
 			currentGame->PendingCheckpointName = NAME_None;
 			return TRUE;
+		}
+	}
+
+	OLQuickSave_TickPendingLoad(this);
+
+	// TEMP diagnostic for QuickLoad position-gets-overwritten investigation.
+	{
+		static FVector LastTraceLoc(0,0,0);
+		static DOUBLE  TraceUntil = 0.0;
+		extern bool GQuickLoadTraceActive; extern DOUBLE GQuickLoadTraceStartTime;
+		if (GQuickLoadTraceActive)
+		{
+			if (TraceUntil == 0.0) TraceUntil = GQuickLoadTraceStartTime + 5.0;
+			if (appSeconds() < TraceUntil)
+			{
+				if (HeroPawn && (HeroPawn->Location - LastTraceLoc).SizeSquared() > 1.f)
+				{
+					debugf(TEXT("QuickLoadTrace: t=%.2f HeroPawn=%s Loc=(%.0f,%.0f,%.0f)"),
+						appSeconds() - GQuickLoadTraceStartTime, *HeroPawn->GetName(),
+						HeroPawn->Location.X, HeroPawn->Location.Y, HeroPawn->Location.Z);
+					LastTraceLoc = HeroPawn->Location;
+				}
+			}
+			else
+			{
+				GQuickLoadTraceActive = false;
+				TraceUntil = 0.0;
+			}
 		}
 	}
 
@@ -176,16 +213,43 @@ void AOLPlayerController::TickPlacementMode()
 	FRotator CamRot;
 	eventGetPlayerViewPoint(CamLoc, CamRot);
 
-	const FLOAT TraceLen = 2048.f;
+	const FLOAT TraceLen = Max(64.f, PlacementDistance);
 	FVector TraceEnd = CamLoc + FRotationMatrix(CamRot).GetAxis(0) * TraceLen;
 
-	FCheckResult Hit;
-	if (!GWorld->SingleLineCheck(Hit, this, TraceEnd, CamLoc, TRACE_World | TRACE_StopAtAnyHit))
-		PlacementGhost->SetLocation(Hit.Location);
-	else
+	if (Cast<ALight>(PlacementGhost))
+	{
+		// Lights float freely — no surface snapping.
 		PlacementGhost->SetLocation(TraceEnd);
+	}
+	else
+	{
+		// Per-poly trace so placement snaps to actual mesh surface, not collision hulls.
+		FCheckResult Hit;
+		const DWORD TraceFlags = TRACE_World | TRACE_StopAtAnyHit | TRACE_ComplexCollision;
+		if (!GWorld->SingleLineCheck(Hit, this, TraceEnd, CamLoc, TraceFlags))
+		{
+			FVector SnapLoc = Min(Hit.Time, 1.f) * TraceLen < PlacementDistance
+				? Hit.Location
+				: TraceEnd;
 
-	FRotator GhostRot(0, appRound(PlacementYaw), 0);
+			// Offset upward so the bottom of the mesh bounds sits on the surface,
+			// not its origin (which is typically at mesh center).
+			ADynamicSMActor* SMA = Cast<ADynamicSMActor>(PlacementGhost);
+			if (SMA && SMA->StaticMeshComponent && SMA->StaticMeshComponent->StaticMesh)
+			{
+				const FBoxSphereBounds& B = SMA->StaticMeshComponent->StaticMesh->Bounds;
+				// Bottom of mesh relative to origin: Origin.Z - BoxExtent.Z (may be negative).
+				// We want the bottom to touch the surface, so lift by (extent - offset_of_origin_above_bottom).
+				const FLOAT BottomOffset = B.Origin.Z - B.BoxExtent.Z;
+				SnapLoc.Z -= BottomOffset;
+			}
+			PlacementGhost->SetLocation(SnapLoc);
+		}
+		else
+			PlacementGhost->SetLocation(TraceEnd);
+	}
+
+	FRotator GhostRot(appRound(PlacementPitch), appRound(PlacementYaw), 0);
 	PlacementGhost->SetRotation(GhostRot);
 }
 
@@ -502,14 +566,37 @@ UBOOL UOLPlayerInput::InputKey(INT ControllerId, FName Key, enum EInputEvent Eve
     // Placement mode input — intercept before browser and game
     if (PC && PC->bPlacementMode && Event == IE_Pressed)
     {
-        if (Key == KEY_MouseScrollUp)
+        if (Key == KEY_MouseScrollUp || Key == KEY_MouseScrollDown)
         {
-            PC->PlacementYaw += 3640.f; // ~20 degrees
-            return TRUE;
-        }
-        if (Key == KEY_MouseScrollDown)
-        {
-            PC->PlacementYaw -= 3640.f;
+            const INT   Dir    = (Key == KEY_MouseScrollUp) ? 1 : -1;
+            const UBOOL bShift = IsShiftPressed();
+            const UBOOL bAlt   = IsAltPressed();
+            // Round current value to nearest step, then increment by Dir.
+            const INT kStep = GPlacementRotStep;
+            if (bShift && bAlt)
+            {
+                INT n = (INT)appRound(PC->PlacementPitch / (FLOAT)kStep);
+                PC->PlacementPitch = (FLOAT)((n + Dir) * kStep);
+            }
+            else if (bShift)
+            {
+                INT n = (INT)appRound(PC->PlacementYaw / (FLOAT)kStep);
+                PC->PlacementYaw = (FLOAT)((n + Dir) * kStep);
+            }
+            else if (bAlt)
+            {
+                // Alt: adjust light radius (only meaningful for Point/Spot)
+                PC->PlacementRadius = Max(16.f, Dir > 0.f
+                    ? PC->PlacementRadius * 1.1f
+                    : PC->PlacementRadius / 1.1f);
+            }
+            else
+            {
+                // Plain wheel: adjust max placement distance from camera
+                PC->PlacementDistance = Max(64.f, Dir > 0.f
+                    ? PC->PlacementDistance * 1.15f
+                    : PC->PlacementDistance / 1.15f);
+            }
             return TRUE;
         }
         if (Key == KEY_LeftMouseButton)
@@ -593,7 +680,24 @@ UBOOL UOLPlayerInput::IsKeyPressed(FName Key)
 
 void AOLPlayerController::NativeUpdateRotation(FLOAT deltaTime)
 {
-	FRotator deltaRot((INT)PlayerInput->aLookUp, (INT)PlayerInput->aTurn, 0);
+	FLOAT lookUp = PlayerInput->aLookUp;
+	FLOAT turn   = PlayerInput->aTurn;
+
+	if (GCinematicSensitivity)
+	{
+		// Exponential smoothing — strong enough to feel like a gamepad stick
+		FLOAT alpha = 1.f - appPow(1.f - GCinematicSensitivityAlpha, deltaTime * 60.f);
+		GSmoothedInput.X += (lookUp - GSmoothedInput.X) * alpha;
+		GSmoothedInput.Y += (turn   - GSmoothedInput.Y) * alpha;
+		lookUp = GSmoothedInput.X;
+		turn   = GSmoothedInput.Y;
+	}
+	else
+	{
+		GSmoothedInput = FVector2D(lookUp, turn);
+	}
+
+	FRotator deltaRot((INT)lookUp, (INT)turn, 0);
 	HeroPawn->Camera->LatchInput(deltaRot.GetNormalized());
 }
 
@@ -2263,6 +2367,12 @@ void OnLevelBecomingVisible(ULevelStreaming* streamingLevel)
 
 void AOLPlayerController::OnLevelBecomingVisible(ULevelStreaming* streamingLevel)
 {
+	if (bTravellingToCheckpoint)
+	{
+		FString StageText = FString::Printf(TEXT("Loading level: %s"), *streamingLevel->PackageName.ToString());
+		OLLoadingOverlay_SetStage(*StageText);
+	}
+
 	if (!LevelsResetAfterPlayerDeath.ContainsItem(streamingLevel->PackageName))
 	{
 		debugf(TEXT(" ### --- Resetting level %s"), *streamingLevel->PackageName.ToString());
@@ -2307,14 +2417,16 @@ void AOLPlayerController::StartTravelToCheckpoint()
 	PostAkEvent(SndResetMixStates);
 
 	eventClientSetCameraFade(TRUE, FColor(0, 0, 0), FVector2D(1.0f, 0.0f), 3.0f, TRUE);
-	
+
 	ShowLoadingMovie(TRUE);
+
+	OLLoadingOverlay_SetStage(TEXT("Traveling to checkpoint"));
 }
 
 void AOLPlayerController::TravelComplete()
 {
 	bTravellingToCheckpoint = FALSE;
-	
+
 	eventClientSetCameraFade(TRUE, FColor(0, 0, 0), FVector2D(1.0f, 0.0f), 3.0f, TRUE);
 
 	PostAkEvent(SndResetMixStates);
@@ -2324,12 +2436,15 @@ void AOLPlayerController::TravelComplete()
 
 	Utils::GetFXManager()->ResetEffects();
 
-	ApplyCheckpoint(olGame->CurrentCheckpointName);	
+	OLLoadingOverlay_SetStage(TEXT("Applying checkpoint"));
+	ApplyCheckpoint(olGame->CurrentCheckpointName);
 
 	SetState(LoadingStateGroup, LoadingStateOff);
 
 	if (HeroPawn)
 	{
+		OLLoadingOverlay_SetStage(TEXT("Spawning player"));
+
 #if DINGO
 		GOLDingo->EventPlayerSpawned(olGame->CurrentCheckpointName, olGame->DifficultyMode, HeroPawn->Location);
 #endif
@@ -2382,6 +2497,8 @@ void AOLPlayerController::TravelComplete()
 
 	HUD->Reset();
 	eventOnTravelComplete();
+
+	OLLoadingOverlay_SetStage(NULL);
 }
 
 void AOLPlayerController::UpdateTravel(FLOAT deltaTime)
@@ -3177,9 +3294,26 @@ void AOLPlayerController::ProcessFreeCam(FLOAT deltaSeconds)
 		}
 	}
 
-	DebugCamPos += delta * freeCamSpeed;	
+	DebugCamPos += delta * freeCamSpeed;
 
-	FRotator DeltaRot((INT)PlayerInput->aLookUp, (INT)PlayerInput->aTurn, 0);
+	FLOAT lookUp = PlayerInput->aLookUp;
+	FLOAT turn   = PlayerInput->aTurn;
+
+	if (GCinematicSensitivity)
+	{
+		// Mirrors NativeUpdateRotation's smoothing so FreeCam benefits from it too.
+		FLOAT alpha = 1.f - appPow(1.f - GCinematicSensitivityAlpha, deltaSeconds * 60.f);
+		GSmoothedInput.X += (lookUp - GSmoothedInput.X) * alpha;
+		GSmoothedInput.Y += (turn   - GSmoothedInput.Y) * alpha;
+		lookUp = GSmoothedInput.X;
+		turn   = GSmoothedInput.Y;
+	}
+	else
+	{
+		GSmoothedInput = FVector2D(lookUp, turn);
+	}
+
+	FRotator DeltaRot((INT)lookUp, (INT)turn, 0);
 	DebugCamRot += DeltaRot;
 	DebugCamRot.Pitch = Clamp(FRotator::NormalizeAxis(DebugCamRot.Pitch), -16384, 16383);
 

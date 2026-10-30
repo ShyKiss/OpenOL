@@ -11,6 +11,16 @@ extern UBOOL GUnlockDoors;
 extern volatile float GDebugVec0[3]; // WorkerHead->Origin
 extern volatile float GDebugVec1[3]; // AttachComponent offset
 
+// Despawns editor-spawned test props/doors/lights/enemies; defined in OLImGui_Spawns.cpp.
+extern void OLSpawns_DespawnTestActors();
+
+// Temporary workaround: OLLedgeMarker::bCanSlide is not set on any marker in the current
+// level data, making SMT_SlideOver unreachable everywhere. See CanStartSlideOver (or
+// wherever bCanSlide is checked below) for details. Defaults ON (confirmed working as
+// intended) since no marker has bCanSlide set anyway; still toggled via
+// OLCheatManager::ToggleIgnoreLedgeMarkerCanSlide if it ever needs to be turned off.
+UBOOL GIgnoreLedgeMarkerCanSlide = TRUE;
+
 // Forward declaration — defined near SetDummyHeadPitch.
 static void DummyMeshPostAnimCallback(USkeletalMeshComponent* Comp);
 
@@ -2866,8 +2876,9 @@ UBOOL AOLHero::TryPassObstacle(AOLLedgeMarker* node1, const FVector& playerInten
 		crossingDirection = -crossingDirection;
 	}
 	
-	// Slide?
-	UBOOL bCanSlide = bTargettedInput && bRunningIntention && (distToObstacle >= SlideOverInteractDistMin) && (distToObstacle <= SlideOverInteractDistMax) && node1->bCanSlide;
+	// Slide? See GIgnoreLedgeMarkerCanSlide near the top of this file for why the OR.
+	extern UBOOL GIgnoreLedgeMarkerCanSlide;
+	UBOOL bCanSlide = bTargettedInput && bRunningIntention && (distToObstacle >= SlideOverInteractDistMin) && (distToObstacle <= SlideOverInteractDistMax) && (node1->bCanSlide || GIgnoreLedgeMarkerCanSlide);
 	bCanSlide = bCanSlide && IsBetween(obstacleHeight, MinHeightForSlide, MaxHeightForSlide) && CouldStartSpecialMove(SMT_SlideOver);
 	if (bCanSlide)
 	{
@@ -10899,6 +10910,10 @@ void AOLHero::Die()
 	OLPC->eventClientPlayForceFeedbackWaveform(((UOLDmgType*)UOLDmgType::StaticClass()->GetDefaultObject())->KilledFFWaveform);
 	OLPC->eventClientSetCameraFade(TRUE, FColor(0, 0, 0), FVector2D(0.0f, 1.0f), 5.0f, TRUE);
 	Utils::GetFXManager()->TriggerBlur(1.0f, 5.0f, 0.7f, 4.0f, 0.0f);
+
+	// Clear editor-spawned test props/doors/lights/enemies so a checkpoint reload
+	// doesn't carry stale testing objects into the next attempt.
+	OLSpawns_DespawnTestActors();
 }
 
 

@@ -2073,6 +2073,7 @@ public:
     virtual UBOOL TryGrabUnder();
     virtual UBOOL InvestigateObject(class AActor* anActor);
     virtual UBOOL IsInAttackRange();
+    virtual UBOOL IsImprovedAI();
     virtual UBOOL IsInApproachAttackRange();
     virtual UBOOL IsInFinalAttackRange();
     virtual UBOOL IsInDamageRange();
@@ -2151,6 +2152,11 @@ public:
     {
         P_FINISH;
         *(UBOOL*)Result=this->IsInAttackRange();
+    }
+    DECLARE_FUNCTION(execIsImprovedAI)
+    {
+        P_FINISH;
+        *(UBOOL*)Result=this->IsImprovedAI();
     }
     DECLARE_FUNCTION(execIsInApproachAttackRange)
     {
@@ -3832,6 +3838,7 @@ AUTOGENERATE_FUNCTION(AOLBot,-1,execIsPlayerOnBrokenSideOfDoor);
 AUTOGENERATE_FUNCTION(AOLBot,-1,execIsInDamageRange);
 AUTOGENERATE_FUNCTION(AOLBot,-1,execIsInFinalAttackRange);
 AUTOGENERATE_FUNCTION(AOLBot,-1,execIsInApproachAttackRange);
+AUTOGENERATE_FUNCTION(AOLBot,-1,execIsImprovedAI);
 AUTOGENERATE_FUNCTION(AOLBot,-1,execIsInAttackRange);
 AUTOGENERATE_FUNCTION(AOLBot,-1,execInvestigateObject);
 AUTOGENERATE_FUNCTION(AOLBot,-1,execTryGrabUnder);
@@ -4044,6 +4051,7 @@ FNativeFunctionLookup GOLGameAOLBotNatives[] =
 	MAP_NATIVE(AOLBot, execIsInDamageRange)
 	MAP_NATIVE(AOLBot, execIsInFinalAttackRange)
 	MAP_NATIVE(AOLBot, execIsInApproachAttackRange)
+	MAP_NATIVE(AOLBot, execIsImprovedAI)
 	MAP_NATIVE(AOLBot, execIsInAttackRange)
 	MAP_NATIVE(AOLBot, execInvestigateObject)
 	MAP_NATIVE(AOLBot, execTryGrabUnder)

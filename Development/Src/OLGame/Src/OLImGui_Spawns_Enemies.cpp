@@ -93,72 +93,145 @@ static volatile int     GWeaponHoverIdx         = -1; // weapon hovered in combo
 static FOLPreviewInstance GPreviewWeapon;
 static int              GWeaponPreviewLoadedIdx = -1;
 
-// Load mesh for GPreviewPendingIdx into cache and push to preview system.
+// Sentinel values for GPreviewMeshCache / GWeaponMeshCache slots:
+//   NULL          = not requested yet
+//   MESH_LOADING  = async request in flight
+//   MESH_FAILED   = load attempted, object not found
+//   valid pointer = loaded and pinned
+static USkeletalMesh* const MESH_LOADING = (USkeletalMesh*)(PTRINT)(-2);
+static USkeletalMesh* const MESH_FAILED  = (USkeletalMesh*)(PTRINT)(-1);
+
+// Hover state — declared here so OnEnemyMeshLoaded (below) can reference them.
+static volatile int GPreviewHoverIdx    = -1;
+static int          GPreviewHoverLoaded = -1;
+static FOLPreviewInstance GPreviewHover;
+
+struct FEnemyMeshCallbackData { int Idx; };
+static void OnEnemyMeshLoaded(UObject* Result, void* UserData)
+{
+    FEnemyMeshCallbackData* D = (FEnemyMeshCallbackData*)UserData;
+    int Idx = D->Idx;
+    delete D;
+    USkeletalMesh* M = Result ? Cast<USkeletalMesh>(Result) : NULL;
+    if (M) M->AddToRoot();
+    GPreviewMeshCache[Idx] = M ? M : MESH_FAILED;
+
+    // If this is the pending main preview, apply it now that it's ready.
+    if (Idx == GPreviewPendingIdx)
+    {
+        const FEnemyMeshEntry& E = GEnemyMeshTable[Idx];
+        const bool bWeapon = (GSpawnWeaponIdx > 0) && (E.AnimSetWeaponObject != NULL);
+        const char* AnimSetObj = bWeapon ? E.AnimSetWeaponObject : E.AnimSetObject;
+        GPreviewMain.SetSkeletalMeshWithAnim(M, E.AnimSetPackage, AnimSetObj, E.IdleAnim);
+        GPreviewLoadedIdx  = Idx;
+        GWeaponAttachedIdx = -1;
+    }
+    // If it's the current hover, apply to hover instance.
+    if (Idx == GPreviewHoverLoaded)
+    {
+        GPreviewHover.SetSkeletalMeshWithAnim(M,
+            GEnemyMeshTable[Idx].AnimSetPackage,
+            GEnemyMeshTable[Idx].AnimSetObject,
+            GEnemyMeshTable[Idx].IdleAnim);
+    }
+}
+
+static void RequestEnemyMeshAsync(int Idx)
+{
+    if (GPreviewMeshCache[Idx] != NULL) return; // already loaded or in flight
+    const FEnemyMeshEntry& E = GEnemyMeshTable[Idx];
+    GPreviewMeshCache[Idx] = MESH_LOADING;
+    FEnemyMeshCallbackData* D = new FEnemyMeshCallbackData();
+    D->Idx = Idx;
+    Utils::LoadObjectFromModPackageAsync(
+        FString(ANSI_TO_TCHAR(E.Package)),
+        FString(ANSI_TO_TCHAR(E.ObjectPath)),
+        USkeletalMesh::StaticClass(),
+        OnEnemyMeshLoaded, D);
+}
+
+// Kick off async load for pending index; apply immediately if already cached.
 static void LoadAndSetPreviewMesh()
 {
     int Idx = GPreviewPendingIdx;
     if (Idx < 0 || Idx >= (int)ARRAY_COUNT(GEnemyNames))
         return;
 
-    if (!GPreviewMeshCache[Idx])
+    USkeletalMesh* Cached = GPreviewMeshCache[Idx];
+    if (Cached == NULL || Cached == MESH_LOADING)
     {
-        const FEnemyMeshEntry& E = GEnemyMeshTable[Idx];
-        UObject* Loaded = Utils::LoadObjectFromModPackage(
-            FString(ANSI_TO_TCHAR(E.Package)),
-            FString(ANSI_TO_TCHAR(E.ObjectPath)),
-            USkeletalMesh::StaticClass());
-        USkeletalMesh* M = Loaded ? Cast<USkeletalMesh>(Loaded) : NULL;
-        if (M) M->AddToRoot(); // pin against GC for the lifetime of this cache slot
-        GPreviewMeshCache[Idx] = M ? M : (USkeletalMesh*)(PTRINT)(-1);
+        // Kick off async load; OnEnemyMeshLoaded will apply when done.
+        RequestEnemyMeshAsync(Idx);
+        return;
     }
-
-    USkeletalMesh* Mesh = GPreviewMeshCache[Idx];
-    if ((PTRINT)Mesh == (PTRINT)(-1))
-        Mesh = NULL;
-
-    const FEnemyMeshEntry& E2 = GEnemyMeshTable[Idx];
-    const bool bWeapon = (GSpawnWeaponIdx > 0) && (E2.AnimSetWeaponObject != NULL);
-    const char* AnimSetObj = bWeapon ? E2.AnimSetWeaponObject : E2.AnimSetObject;
-    GPreviewMain.SetSkeletalMeshWithAnim(Mesh, E2.AnimSetPackage, AnimSetObj, E2.IdleAnim);
+    // Already in cache — apply immediately.
+    USkeletalMesh* Mesh = (Cached == MESH_FAILED) ? NULL : Cached;
+    const FEnemyMeshEntry& E = GEnemyMeshTable[Idx];
+    const bool bWeapon = (GSpawnWeaponIdx > 0) && (E.AnimSetWeaponObject != NULL);
+    const char* AnimSetObj = bWeapon ? E.AnimSetWeaponObject : E.AnimSetObject;
+    GPreviewMain.SetSkeletalMeshWithAnim(Mesh, E.AnimSetPackage, AnimSetObj, E.IdleAnim);
     GPreviewLoadedIdx  = Idx;
-    GWeaponAttachedIdx = -1; // force weapon re-attach after mesh change
+    GWeaponAttachedIdx = -1;
 }
 
-// Hovered index in combo — -1 means no hover (written render thread, read game thread).
-static volatile int GPreviewHoverIdx     = -1;
-static int          GPreviewHoverLoaded  = -1; // index currently in hover instance
+// Load a random enemy into Out using the shared mesh cache. Returns false if still loading.
+bool OLSpawns_Enemies_GetRandomMesh(FHubEnemyMesh& Out)
+{
+    int Count = (int)ARRAY_COUNT(GEnemyNames);
+    int Idx   = appRand() % Count;
+    USkeletalMesh* Cached = GPreviewMeshCache[Idx];
+    if (Cached == NULL || Cached == MESH_LOADING)
+    {
+        RequestEnemyMeshAsync(Idx);
+        return false; // not ready yet
+    }
+    if (Cached == MESH_FAILED) return false;
+    Out.Mesh       = Cached;
+    Out.AnimSetPkg = GEnemyMeshTable[Idx].AnimSetPackage;
+    Out.AnimSetObj = GEnemyMeshTable[Idx].AnimSetObject;
+    Out.IdleAnim   = GEnemyMeshTable[Idx].IdleAnim;
+    return true;
+}
 
-// Separate preview instance for hover tooltip.
-static FOLPreviewInstance GPreviewHover;
+// Sentinel aliases for weapon cache (same pattern as enemy cache).
+static UStaticMesh* const WMESH_LOADING = (UStaticMesh*)(PTRINT)(-2);
+static UStaticMesh* const WMESH_FAILED  = (UStaticMesh*)(PTRINT)(-1);
 
-// Called from game thread each tick to keep both preview instances up to date.
-// Load weapon static mesh for index Idx into cache; returns mesh or NULL.
+struct FWeaponMeshCallbackData { int Idx; };
+static void OnWeaponMeshLoaded(UObject* Result, void* UserData)
+{
+    FWeaponMeshCallbackData* D = (FWeaponMeshCallbackData*)UserData;
+    int Idx = D->Idx;
+    delete D;
+    UStaticMesh* M = Result ? Cast<UStaticMesh>(Result) : NULL;
+    if (M) M->AddToRoot();
+    GWeaponMeshCache[Idx] = M ? M : WMESH_FAILED;
+}
+
+// Returns cached weapon mesh or NULL; kicks off async load if not yet requested.
+// Returns NULL while loading — caller should retry next tick.
 static UStaticMesh* LoadWeaponMesh(int Idx)
 {
     if (Idx <= 0 || Idx >= (int)ARRAY_COUNT(GWeaponNames))
-        return NULL; // Weapon_None or out of range
+        return NULL;
 
-    if (!GWeaponMeshCache[Idx])
-    {
-        const FWeaponMeshEntry& E = GWeaponMeshTable[Idx];
-        if (!E.ObjectPath[0])
-        {
-            GWeaponMeshCache[Idx] = (UStaticMesh*)(PTRINT)(-1);
-        }
-        else
-        {
-            UObject* Loaded = Utils::LoadObjectFromModPackage(
-                FString(ANSI_TO_TCHAR(E.Package)),
-                FString(ANSI_TO_TCHAR(E.ObjectPath)),
-                UStaticMesh::StaticClass());
-            UStaticMesh* M = Loaded ? Cast<UStaticMesh>(Loaded) : NULL;
-            if (M) M->AddToRoot(); // pin against GC
-            GWeaponMeshCache[Idx] = M ? M : (UStaticMesh*)(PTRINT)(-1);
-        }
-    }
+    UStaticMesh* Cached = GWeaponMeshCache[Idx];
+    if (Cached == WMESH_FAILED)  return NULL;
+    if (Cached == WMESH_LOADING) return NULL;
+    if (Cached != NULL)          return Cached;
 
-    UStaticMesh* M = GWeaponMeshCache[Idx];
-    return ((PTRINT)M == (PTRINT)(-1)) ? NULL : M;
+    const FWeaponMeshEntry& E = GWeaponMeshTable[Idx];
+    if (!E.ObjectPath[0]) { GWeaponMeshCache[Idx] = WMESH_FAILED; return NULL; }
+
+    GWeaponMeshCache[Idx] = WMESH_LOADING;
+    FWeaponMeshCallbackData* D = new FWeaponMeshCallbackData();
+    D->Idx = Idx;
+    Utils::LoadObjectFromModPackageAsync(
+        FString(ANSI_TO_TCHAR(E.Package)),
+        FString(ANSI_TO_TCHAR(E.ObjectPath)),
+        UStaticMesh::StaticClass(),
+        OnWeaponMeshLoaded, D);
+    return NULL;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,14 +323,37 @@ struct FPlacementSnapshot
 };
 static FPlacementSnapshot GPlacementSnapshot; // written game thread, read render thread
 
+// Confirm handler: owns ghost if it has a SkeletalMeshComponent but is NOT an OLDoor.
+// OLDoor also has SkeletalMeshComponents (breaking meshes) so we must exclude it.
+static bool ConfirmEnemyPlacement(AOLPlayerController* PC)
+{
+    AActor* Ghost = PC->PlacementGhost;
+    if (Cast<ALight>(Ghost)) return false;
+    // Reject OLDoor ghosts — they have DoorMeshType property.
+    if (FindField<UProperty>(Ghost->GetClass(), TEXT("DoorMeshType"))) return false;
+
+    bool bHasSkel = false;
+    for (INT i = 0; i < Ghost->Components.Num(); ++i)
+    {
+        if (Cast<USkeletalMeshComponent>(Ghost->Components(i)))
+        {
+            bHasSkel = true;
+            break;
+        }
+    }
+    if (!bHasSkel) return false;
+
+    PC->bPlacementConfirmPending = FALSE;
+    DoSpawnEnemyAtGhost(PC);
+    return true;
+}
+
 void OLSpawns_TickPlacement()
 {
+    // Register our confirm handler once.
+    OLSpawns_RegisterConfirmHandler(ConfirmEnemyPlacement);
+
     AOLPlayerController* PC = Utils::GetOLPC();
-    if (PC && PC->bPlacementConfirmPending)
-    {
-        PC->bPlacementConfirmPending = FALSE;
-        DoSpawnEnemyAtGhost(PC);
-    }
 
     // Update placement overlay snapshot for render thread.
     FPlacementSnapshot Snap;
@@ -362,6 +458,13 @@ void OLSpawns_TickPreviews()
     // Rebuild enemy list snapshot on game thread each tick.
     RebuildEnemyList();
 
+    // Hub previews — only when hub grid is visible.
+    OLSpawns_TickHubPreviews();
+
+    // Enemy sub-tab previews — only when that tab is open.
+    if (!OLSpawns_IsEnemyTabActive())
+        return;
+
     // Lazy init of main preview.
     if (!GPreviewMain.IsInited())
         GPreviewMain.Init();
@@ -397,24 +500,21 @@ void OLSpawns_TickPreviews()
 
         if (GPreviewHoverLoaded != HoverIdx)
         {
-            if (!GPreviewMeshCache[HoverIdx])
-            {
-                const FEnemyMeshEntry& E = GEnemyMeshTable[HoverIdx];
-                UObject* Loaded = Utils::LoadObjectFromModPackage(
-                    FString(ANSI_TO_TCHAR(E.Package)),
-                    FString(ANSI_TO_TCHAR(E.ObjectPath)),
-                    USkeletalMesh::StaticClass());
-                USkeletalMesh* M = Loaded ? Cast<USkeletalMesh>(Loaded) : NULL;
-                if (M) M->AddToRoot(); // pin against GC
-                GPreviewMeshCache[HoverIdx] = M ? M : (USkeletalMesh*)(PTRINT)(-1);
-            }
-            USkeletalMesh* HovMesh = GPreviewMeshCache[HoverIdx];
-            if ((PTRINT)HovMesh == (PTRINT)(-1)) HovMesh = NULL;
-            GPreviewHover.SetSkeletalMeshWithAnim(HovMesh,
-                GEnemyMeshTable[HoverIdx].AnimSetPackage,
-                GEnemyMeshTable[HoverIdx].AnimSetObject,
-                GEnemyMeshTable[HoverIdx].IdleAnim);
             GPreviewHoverLoaded = HoverIdx;
+            USkeletalMesh* Cached = GPreviewMeshCache[HoverIdx];
+            if (Cached == NULL || Cached == MESH_LOADING)
+            {
+                // Kick off async load; OnEnemyMeshLoaded applies to hover when done.
+                RequestEnemyMeshAsync(HoverIdx);
+            }
+            else
+            {
+                USkeletalMesh* HovMesh = (Cached == MESH_FAILED) ? NULL : Cached;
+                GPreviewHover.SetSkeletalMeshWithAnim(HovMesh,
+                    GEnemyMeshTable[HoverIdx].AnimSetPackage,
+                    GEnemyMeshTable[HoverIdx].AnimSetObject,
+                    GEnemyMeshTable[HoverIdx].IdleAnim);
+            }
         }
         GPreviewHover.Tick(GOLPreviewYaw, GOLPreviewFOV);
     }
@@ -673,6 +773,7 @@ void OLSpawns_ShutdownPreviews()
     GPreviewMain.Shutdown();   // already called by OLPreview_ShutdownSystem, but idempotent
     GPreviewHover.Shutdown();
     GPreviewWeapon.Shutdown();
+    OLSpawns_ShutdownHubPreviews();
 
     // Unpin and clear mesh caches. AddToRoot was called when each entry was cached;
     // RemoveFromRoot here lets GC collect them if no other references exist.
@@ -856,6 +957,7 @@ static void DrawEnemyDetail()
 // ---------------------------------------------------------------------------
 
 static char GEnemyFilter[128] = {};
+static FOLRowMultiSelect GEnemySel;
 
 static void DrawEnemyList()
 {
@@ -892,18 +994,22 @@ static void DrawEnemyList()
     const float PlusH = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
     ImGui::BeginChild("##enemylist", ImVec2(0, -PlusH), false);
 
-    if (ImGui::BeginTable("##etbl", 3,
+    if (ImGui::BeginTable("##etbl", 4,
         ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp |
         ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))
     {
         ImGui::TableSetupColumn(OLLocale_T("spawns.col.name"),    ImGuiTableColumnFlags_WidthStretch, 3.f);
         ImGui::TableSetupColumn(OLLocale_T("spawns.col.health"),  ImGuiTableColumnFlags_WidthStretch, 1.f);
-        ImGui::TableSetupColumn(OLLocale_T("spawns.col.actions"), ImGuiTableColumnFlags_WidthFixed,  60.f);
+        ImGui::TableSetupColumn("",                                ImGuiTableColumnFlags_WidthFixed,  50.f);
+        ImGui::TableSetupColumn(OLLocale_T("spawns.col.actions"), ImGuiTableColumnFlags_WidthFixed,  50.f);
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
+        OL_ROW_MULTISELECT_BEGIN(GEnemySel, FilteredCount);
+
         ImGuiListClipper Clipper;
         Clipper.Begin(FilteredCount);
+        OL_ROW_MULTISELECT_INCLUDE_RANGE_SRC(Clipper);
         while (Clipper.Step())
         {
             for (int ci = Clipper.DisplayStart; ci < Clipper.DisplayEnd; ++ci)
@@ -912,49 +1018,49 @@ static void DrawEnemyList()
                 const FEnemyEntry& En = Snap.Entries[i];
                 ImGui::TableNextRow();
 
-                // Col 0 — name / row selector
+                // Col 0 — name / multi-select
                 ImGui::TableSetColumnIndex(0);
                 ImGui::PushID(i);
-                if (ImGui::Selectable(En.Name, (i == GSelectedEnemyIdx),
-                    ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap))
-                {
-                    GSelectedEnemyIdx = i;
-                    GSpawnsView       = SV_Enemy;
-                }
+                OL_ROW_SELECTABLE(GEnemySel, En.Name, ci);
                 ImGui::PopID();
 
                 // Col 1 — HP
                 ImGui::TableSetColumnIndex(1);
                 ImGui::Text("%d", En.Health);
 
-                // Col 2 — "⋮" button → popup with Teleport / Delete
+                // Col 2 — Edit button → opens this enemy's detail view
                 ImGui::TableSetColumnIndex(2);
+                ImGui::PushID(i + 20000);
+                if (ImGui::Button(OLLocale_T("spawns.action.edit"), ImVec2(-1.f, 0.f)))
+                {
+                    GSelectedEnemyIdx = i;
+                    GSpawnsView       = SV_Enemy;
+                }
+                ImGui::PopID();
+
+                // Col 3 — "⋮" button → popup with Teleport / Delete
+                ImGui::TableSetColumnIndex(3);
                 ImGui::PushID(i + 10000);
                 char PopupId[32];
                 _snprintf(PopupId, sizeof(PopupId), "##emenu%d", i);
-                if (ImGui::Button("...", ImVec2(-1.f, 0.f)))
-                    ImGui::OpenPopup(PopupId);
-                if (ImGui::BeginPopup(PopupId))
+                if (OL_ROW_MENU_BEGIN(PopupId))
                 {
-                    if (ImGui::MenuItem(OLLocale_T("spawns.action.teleport")))
-                    {
-                        _snprintf(GPendingEnemyAction, sizeof(GPendingEnemyAction), "%s", En.Name);
-                        OLImGui_EnqueueCall(Action_TeleportEnemy);
-                    }
-                    ImGui::Separator();
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.35f, 0.35f, 1.f));
-                    if (ImGui::MenuItem(OLLocale_T("spawns.action.delete")))
-                    {
-                        _snprintf(GPendingEnemyAction, sizeof(GPendingEnemyAction), "%s", En.Name);
-                        OLImGui_EnqueueCall(Action_DeleteEnemy);
-                    }
-                    ImGui::PopStyleColor();
-                    ImGui::EndPopup();
+                    OL_ROW_MENU_ITEM("spawns.action.teleport", GPendingEnemyAction, sizeof(GPendingEnemyAction), En.Name, Action_TeleportEnemy);
+                    OL_ROW_MENU_SEPARATOR;
+                    OL_ROW_MENU_ITEM_DANGER("spawns.action.delete", GPendingEnemyAction, sizeof(GPendingEnemyAction), En.Name, Action_DeleteEnemy);
+                    OL_ROW_MENU_END;
                 }
                 ImGui::PopID();
             }
         }
         Clipper.End();
+        OL_ROW_MULTISELECT_END(GEnemySel);
+
+        if (OL_ROW_MULTIMENU_BEGIN(GEnemySel, "##ebulkmenu"))
+        {
+            OL_ROW_MULTIMENU_ITEM_DANGER("spawns.action.delete", GEnemySel, _r, Snap.Entries[GFilteredIdx[_r]].Name, GPendingEnemyAction, sizeof(GPendingEnemyAction), Action_DeleteEnemy);
+            OL_ROW_MENU_END;
+        }
         ImGui::EndTable();
     }
 

@@ -98,7 +98,7 @@ struct FBinding
 static FBinding GBindings[MAX_BINDINGS];
 static int      GBindingCount   = 0;
 static bool     GBindingsLoaded = false;
-static int      GOverlayToggleVK = VK_F6; // configurable, saved as overlay.toggle
+static int      GOverlayToggleVK = VK_OEM_3; // configurable, saved as overlay.toggle (~)
 
 // ---------------------------------------------------------------------------
 // INI path helper — same base as settings.ini.
@@ -177,6 +177,15 @@ int OLImGui_GetOverlayToggleVK()
 {
     BuildKeyTable();
     return GOverlayToggleVK;
+}
+
+int OLImGui_GetOverlayToggleImKey()
+{
+    BuildKeyTable();
+    for (int k = 0; k < GBindKeyCount; ++k)
+        if (GBindKeys[k].VK == GOverlayToggleVK)
+            return (int)GBindKeys[k].ImKey;
+    return (int)ImGuiKey_None;
 }
 
 void OLImGui_Bindings_Save()
@@ -267,11 +276,15 @@ static void DrawPopupModal()
     ImGui::Text("Selected: %s", CurName);
     ImGui::Separator();
 
-    // Detect any key press via GetAsyncKeyState (bypasses ImGui focus entirely).
-    // Low bit (0x0001) = key went down since last GetAsyncKeyState call for this VK.
+    // Detect the key the user actually just pressed via ImGui's own edge-triggered
+    // key state (io.KeysData[].DownDuration == 0 this frame). GetAsyncKeyState was
+    // used here previously, but it consumes its own per-VK "went down" bit on every
+    // call, so polling all ~150 VK codes every frame meant whichever VK happened to
+    // still have a stale bit set (e.g. from movement keys held going into the popup)
+    // could win the race instead of the key the user actually pressed just now.
     for (int k = 1; k < GBindKeyCount; ++k)
     {
-        if (GetAsyncKeyState(GBindKeys[k].VK) & 0x0001)
+        if (GBindKeys[k].ImKey != ImGuiKey_None && ImGui::IsKeyPressed(GBindKeys[k].ImKey, false))
         {
             GPopupKeyIdx = k;
             ConfirmBinding(B);
@@ -358,7 +371,7 @@ static int FindOrRegister(const char* ActionId, OLImGuiCallFn Fn)
     return Idx;
 }
 
-void OLImGui_Bindings_RegisterLast(const char* ActionId, OLImGuiCallFn Fn)
+void OLImGui_Bindings_RegisterLast(const char* ActionId, OLImGuiCallFn Fn, const char* Description)
 {
     int Idx = FindOrRegister(ActionId, Fn);
     if (Idx < 0) return;
@@ -369,20 +382,25 @@ void OLImGui_Bindings_RegisterLast(const char* ActionId, OLImGuiCallFn Fn)
     // Show key hint as tooltip when hovered
     if (ImGui::IsItemHovered())
     {
+        char Tip[256];
+        int  Len = 0;
+        if (Description && Description[0])
+            Len = _snprintf(Tip, sizeof(Tip), "%s\n", Description);
+        if (Len < 0 || Len >= (int)sizeof(Tip)) Len = 0;
+
         if (GBindings[Idx].VK != 0)
         {
             const char* KeyName = "?";
             for (int k = 0; k < GBindKeyCount; ++k)
                 if (GBindKeys[k].VK == GBindings[Idx].VK)
                     { KeyName = GBindKeys[k].Name; break; }
-            char Tip[64];
-            _snprintf(Tip, sizeof(Tip), "[%s]  RMB to rebind", KeyName);
-            ImGui::SetTooltip("%s", Tip);
+            _snprintf(Tip + Len, sizeof(Tip) - Len, "[%s]  RMB to rebind", KeyName);
         }
         else
         {
-            ImGui::SetTooltip("RMB to bind a key");
+            _snprintf(Tip + Len, sizeof(Tip) - Len, "RMB to bind a key");
         }
+        ImGui::SetTooltip("%s", Tip);
 
         // Open popup on RMB
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))

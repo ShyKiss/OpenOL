@@ -16,9 +16,15 @@ static void TCHARToCharBuf_Scene(char* Dst, int Len, const TCHAR* Src)
 
 #define ENQUEUE_WRITE(ActorPtr_, Offset_, Type_, Field_, Val_) \
     { int _s = GWriteCount; if (_s < WRITE_QUEUE_SIZE) { \
-        GWriteQueue[_s].Actor = ActorPtr_; GWriteQueue[_s].Offset = (Offset_); \
-        GWriteQueue[_s].Type  = Type_;     GWriteQueue[_s].NewValue.Field_ = Val_; \
-        GWriteCount = _s + 1; } }
+        GWriteQueue[_s].Actor    = ActorPtr_; GWriteQueue[_s].Offset   = (Offset_); \
+        GWriteQueue[_s].ArrayIdx = -1;        GWriteQueue[_s].Type     = Type_; \
+        GWriteQueue[_s].NewValue.Field_ = Val_; GWriteCount = _s + 1; } }
+
+#define ENQUEUE_ARRAY_WRITE(ActorPtr_, Offset_, Idx_, Type_, Field_, Val_) \
+    { int _s = GWriteCount; if (_s < WRITE_QUEUE_SIZE) { \
+        GWriteQueue[_s].Actor    = ActorPtr_; GWriteQueue[_s].Offset   = (Offset_); \
+        GWriteQueue[_s].ArrayIdx = (Idx_);    GWriteQueue[_s].Type     = Type_; \
+        GWriteQueue[_s].NewValue.Field_ = Val_; GWriteCount = _s + 1; } }
 
 // ---------------------------------------------------------------------------
 // World capture hover preview
@@ -65,7 +71,9 @@ static void WCapEnqueuePos(FVector Pos, float Radius)
 // State
 // ---------------------------------------------------------------------------
 
-static UObject* GSelectedObj    = NULL; // currently inspected object
+static UObject* GSelectedObj      = NULL; // currently inspected object
+static UObject* GNavStack[16]     = {};   // navigation breadcrumb stack
+static int      GNavDepth         = 0;    // number of entries in GNavStack
 static char     GSceneFilter[128] = "";
 
 // Filtered index list — only used when GSceneFilter is non-empty.
@@ -144,7 +152,18 @@ static void DrawPropertyInspector(UObject* Obj)
 {
     if (ImGui::Button(OLLocale_T("common.back")))
     {
-        GSelectedObj   = NULL;
+        if (GNavDepth > 0)
+        {
+            // Pop back to previous object in navigation stack.
+            --GNavDepth;
+            GSelectedObj   = GNavStack[GNavDepth];
+            GNavStack[GNavDepth] = NULL;
+            GDetailRequest = GSelectedObj;
+        }
+        else
+        {
+            GSelectedObj   = NULL;
+        }
         GPropFilter[0] = '\0';
         return;
     }
@@ -152,6 +171,24 @@ static void DrawPropertyInspector(UObject* Obj)
     ImGui::SameLine();
     OL_SEARCH("##propfilter", "scene.search.properties", GPropFilter, sizeof(GPropFilter));
 
+    // Breadcrumb: root object name > ... > current
+    if (GNavDepth > 0)
+    {
+        char Crumb[SNAP_NAME_LEN];
+        TCHARToCharBuf_Scene(Crumb, SNAP_NAME_LEN, *GNavStack[0]->GetFName().ToString());
+        ImGui::TextDisabled("%s", Crumb);
+        for (int d = 1; d < GNavDepth; ++d)
+        {
+            ImGui::SameLine(0, 0);
+            ImGui::TextDisabled(" > ");
+            ImGui::SameLine(0, 0);
+            TCHARToCharBuf_Scene(Crumb, SNAP_NAME_LEN, *GNavStack[d]->GetFName().ToString());
+            ImGui::TextDisabled("%s", Crumb);
+        }
+        ImGui::SameLine(0, 0);
+        ImGui::TextDisabled(" > ");
+        ImGui::SameLine(0, 0);
+    }
     char ObjName[SNAP_NAME_LEN];
     TCHARToCharBuf_Scene(ObjName, SNAP_NAME_LEN, *Obj->GetFName().ToString());
     ImGui::TextUnformatted(ObjName);
@@ -164,7 +201,10 @@ static void DrawPropertyInspector(UObject* Obj)
 
     if (!DetailReady)
     {
+        // Show a spinner but keep the child alive so TreeNode open-states are preserved.
+        ImGui::BeginChild("##props", ImVec2(0, 0), false);
         ImGui::TextDisabled("Loading properties...");
+        ImGui::EndChild();
         return;
     }
 
@@ -199,11 +239,43 @@ static void DrawPropertyInspector(UObject* Obj)
                 ImGui::TableSetupColumn(OLLocale_T("scene.col.value"),    ImGuiTableColumnFlags_WidthStretch);
                 ImGui::TableHeadersRow();
 
+                bool bArrayOpen = false; // TreeNode for current array is open
+
                 for (int p = 0; p < G.Props.Num(); ++p)
                 {
                     const FPropSnap& PS = G.Props(p);
-                    if (bPropFiltered && !PropMatchesFilter(PS.Name, GPropFilter))
+
+                    // Close array tree when a non-element property starts.
+                    if (bArrayOpen && PS.ArrayIdx < 0)
+                    {
+                        ImGui::TreePop();
+                        bArrayOpen = false;
+                    }
+
+                    // Array header — draw a collapsible tree row.
+                    if (PS.Type == PST_ArrayHeader)
+                    {
+                        if (bPropFiltered && !PropMatchesFilter(PS.Name, GPropFilter))
+                            continue;
+                        ImGui::PushID(PS.Name); // stable ID regardless of element count changes
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGuiTreeNodeFlags TF = ImGuiTreeNodeFlags_SpanAvailWidth;
+                        bArrayOpen = ImGui::TreeNodeEx("##arr", TF, "%s", PS.Name);
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::TextDisabled("[%d]", PS.Value.Int);
+                        ImGui::PopID();
                         continue;
+                    }
+
+                    // Array element — only draw if tree is open; filter by parent name skipped
+                    // (elements inside closed trees are invisible by definition).
+                    if (PS.ArrayIdx >= 0 && !bArrayOpen)
+                        continue;
+
+                    if (bPropFiltered && PS.ArrayIdx < 0 && !PropMatchesFilter(PS.Name, GPropFilter))
+                        continue;
+
                     ImGui::PushID(p);
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);
@@ -223,7 +295,8 @@ static void DrawPropertyInspector(UObject* Obj)
                             {
                                 GWriteQueue[Slot].Actor         = Obj;
                                 GWriteQueue[Slot].Offset        = PS.Offset;
-                                GWriteQueue[Slot].Type          = PWT_Bool;
+                                GWriteQueue[Slot].ArrayIdx      = PS.ArrayIdx;
+                                GWriteQueue[Slot].Type          = (PS.ArrayIdx >= 0) ? PWT_ArrayBool : PWT_Bool;
                                 GWriteQueue[Slot].BitMask       = PS.BitMask;
                                 GWriteQueue[Slot].NewValue.Bool = Val;
                                 GWriteCount = Slot + 1;
@@ -237,7 +310,10 @@ static void DrawPropertyInspector(UObject* Obj)
                         int Val = (int)PS.Value.Int;
                         if (ImGui::DragInt("##v", &Val))
                         {
-                            ENQUEUE_WRITE(Obj, PS.Offset, PWT_Int, Int, (INT)Val);
+                            if (PS.ArrayIdx >= 0)
+                                ENQUEUE_ARRAY_WRITE(Obj, PS.Offset, PS.ArrayIdx, PWT_ArrayInt, Int, (INT)Val)
+                            else
+                                ENQUEUE_WRITE(Obj, PS.Offset, PWT_Int, Int, (INT)Val);
                             GDetailRequest = Obj;
                         }
                         break;
@@ -247,7 +323,10 @@ static void DrawPropertyInspector(UObject* Obj)
                         float Val = PS.Value.Float;
                         if (ImGui::DragFloat("##v", &Val, 0.01f))
                         {
-                            ENQUEUE_WRITE(Obj, PS.Offset, PWT_Float, Float, Val);
+                            if (PS.ArrayIdx >= 0)
+                                ENQUEUE_ARRAY_WRITE(Obj, PS.Offset, PS.ArrayIdx, PWT_ArrayFloat, Float, Val)
+                            else
+                                ENQUEUE_WRITE(Obj, PS.Offset, PWT_Float, Float, Val);
                             GDetailRequest = Obj;
                         }
                         break;
@@ -275,7 +354,10 @@ static void DrawPropertyInspector(UObject* Obj)
                                     bool Sel = (ei == Val);
                                     if (ImGui::Selectable(B, Sel))
                                     {
-                                        ENQUEUE_WRITE(Obj, PS.Offset, PWT_Byte, Byte, (BYTE)ei);
+                                        if (PS.ArrayIdx >= 0)
+                                            ENQUEUE_ARRAY_WRITE(Obj, PS.Offset, PS.ArrayIdx, PWT_ArrayByte, Byte, (BYTE)ei)
+                                        else
+                                            ENQUEUE_WRITE(Obj, PS.Offset, PWT_Byte, Byte, (BYTE)ei);
                                         GDetailRequest = Obj;
                                     }
                                     if (Sel) ImGui::SetItemDefaultFocus();
@@ -288,7 +370,10 @@ static void DrawPropertyInspector(UObject* Obj)
                             int Val = (int)PS.Value.Byte;
                             if (ImGui::DragInt("##v", &Val, 1.0f, 0, 255))
                             {
-                                ENQUEUE_WRITE(Obj, PS.Offset, PWT_Byte, Byte, (BYTE)Val);
+                                if (PS.ArrayIdx >= 0)
+                                    ENQUEUE_ARRAY_WRITE(Obj, PS.Offset, PS.ArrayIdx, PWT_ArrayByte, Byte, (BYTE)Val)
+                                else
+                                    ENQUEUE_WRITE(Obj, PS.Offset, PWT_Byte, Byte, (BYTE)Val);
                                 GDetailRequest = Obj;
                             }
                         }
@@ -311,16 +396,21 @@ static void DrawPropertyInspector(UObject* Obj)
                         }
 
                         bool Done = ImGui::InputText("##v", SEditBuf, SNAP_STR_LEN,
-                            ImGuiInputTextFlags_EnterReturnsTrue);
+                            ImGuiInputTextFlags_EnterReturnsTrue |
+                            ImGuiInputTextFlags_CallbackCharFilter,
+                            OLImGui_ToggleKeyCharFilter);
                         if (Done)
                         {
                             int Slot = GWriteCount;
                             if (Slot < WRITE_QUEUE_SIZE)
                             {
-                                GWriteQueue[Slot].Actor  = Obj;
-                                GWriteQueue[Slot].Offset = PS.Offset;
-                                GWriteQueue[Slot].Type   = (PS.Type == PST_Name)
-                                                            ? PWT_Name : PWT_Str;
+                                GWriteQueue[Slot].Actor    = Obj;
+                                GWriteQueue[Slot].Offset   = PS.Offset;
+                                GWriteQueue[Slot].ArrayIdx = PS.ArrayIdx;
+                                if (PS.ArrayIdx >= 0)
+                                    GWriteQueue[Slot].Type = (PS.Type == PST_Name) ? PWT_ArrayName : PWT_ArrayStr;
+                                else
+                                    GWriteQueue[Slot].Type = (PS.Type == PST_Name) ? PWT_Name : PWT_Str;
                                 appStrncpyANSI(GWriteQueue[Slot].StrValue,
                                                SEditBuf, SNAP_STR_LEN);
                                 GWriteCount = Slot + 1;
@@ -330,8 +420,25 @@ static void DrawPropertyInspector(UObject* Obj)
                         break;
                     }
                     case PST_Object:
-                        ImGui::TextUnformatted(PS.StrValue);
+                    {
+                        UObject* Ref = PS.TexPtr; // TexPtr holds the object pointer for PST_Object
+                        bool bNavigable = Ref && !Ref->IsPendingKill();
+                        if (bNavigable)
+                        {
+                            if (ImGui::SmallButton(PS.StrValue) && GNavDepth < 16)
+                            {
+                                GNavStack[GNavDepth++] = Obj;
+                                GSelectedObj   = Ref;
+                                GDetailRequest = Ref;
+                                GPropFilter[0] = '\0';
+                            }
+                        }
+                        else
+                        {
+                            ImGui::TextDisabled("%s", PS.StrValue[0] ? PS.StrValue : "None");
+                        }
                         break;
+                    }
                     case PST_Texture:
                     {
                         // Name label
@@ -357,12 +464,13 @@ static void DrawPropertyInspector(UObject* Obj)
                             int Slot = GWriteCount;
                             if (Slot < WRITE_QUEUE_SIZE)
                             {
-                                GWriteQueue[Slot].Actor          = Obj;
-                                GWriteQueue[Slot].Offset         = PS.Offset;
-                                GWriteQueue[Slot].Type           = PWT_Vector;
-                                GWriteQueue[Slot].NewValue.Vec[0]= V[0];
-                                GWriteQueue[Slot].NewValue.Vec[1]= V[1];
-                                GWriteQueue[Slot].NewValue.Vec[2]= V[2];
+                                GWriteQueue[Slot].Actor           = Obj;
+                                GWriteQueue[Slot].Offset          = PS.Offset;
+                                GWriteQueue[Slot].ArrayIdx        = -1;
+                                GWriteQueue[Slot].Type            = PWT_Vector;
+                                GWriteQueue[Slot].NewValue.Vec[0] = V[0];
+                                GWriteQueue[Slot].NewValue.Vec[1] = V[1];
+                                GWriteQueue[Slot].NewValue.Vec[2] = V[2];
                                 GWriteCount = Slot + 1;
                             }
                             GDetailRequest = Obj;
@@ -381,12 +489,13 @@ static void DrawPropertyInspector(UObject* Obj)
                             int Slot = GWriteCount;
                             if (Slot < WRITE_QUEUE_SIZE)
                             {
-                                GWriteQueue[Slot].Actor          = Obj;
-                                GWriteQueue[Slot].Offset         = PS.Offset;
-                                GWriteQueue[Slot].Type           = PWT_Rotator;
-                                GWriteQueue[Slot].NewValue.Rot[0]= (INT)(V[0] * (65536.f / 360.f));
-                                GWriteQueue[Slot].NewValue.Rot[1]= (INT)(V[1] * (65536.f / 360.f));
-                                GWriteQueue[Slot].NewValue.Rot[2]= (INT)(V[2] * (65536.f / 360.f));
+                                GWriteQueue[Slot].Actor           = Obj;
+                                GWriteQueue[Slot].Offset          = PS.Offset;
+                                GWriteQueue[Slot].ArrayIdx        = -1;
+                                GWriteQueue[Slot].Type            = PWT_Rotator;
+                                GWriteQueue[Slot].NewValue.Rot[0] = (INT)(V[0] * (65536.f / 360.f));
+                                GWriteQueue[Slot].NewValue.Rot[1] = (INT)(V[1] * (65536.f / 360.f));
+                                GWriteQueue[Slot].NewValue.Rot[2] = (INT)(V[2] * (65536.f / 360.f));
                                 GWriteCount = Slot + 1;
                             }
                             GDetailRequest = Obj;
@@ -401,13 +510,14 @@ static void DrawPropertyInspector(UObject* Obj)
                             int Slot = GWriteCount;
                             if (Slot < WRITE_QUEUE_SIZE)
                             {
-                                GWriteQueue[Slot].Actor          = Obj;
-                                GWriteQueue[Slot].Offset         = PS.Offset;
-                                GWriteQueue[Slot].Type           = PWT_Color;
-                                GWriteQueue[Slot].NewValue.Col[0] = C[0];
-                                GWriteQueue[Slot].NewValue.Col[1] = C[1];
-                                GWriteQueue[Slot].NewValue.Col[2] = C[2];
-                                GWriteQueue[Slot].NewValue.Col[3] = C[3];
+                                GWriteQueue[Slot].Actor            = Obj;
+                                GWriteQueue[Slot].Offset           = PS.Offset;
+                                GWriteQueue[Slot].ArrayIdx         = -1;
+                                GWriteQueue[Slot].Type             = PWT_Color;
+                                GWriteQueue[Slot].NewValue.Col[0]  = C[0];
+                                GWriteQueue[Slot].NewValue.Col[1]  = C[1];
+                                GWriteQueue[Slot].NewValue.Col[2]  = C[2];
+                                GWriteQueue[Slot].NewValue.Col[3]  = C[3];
                                 GWriteCount = Slot + 1;
                             }
                             GDetailRequest = Obj;
@@ -422,13 +532,14 @@ static void DrawPropertyInspector(UObject* Obj)
                             int Slot = GWriteCount;
                             if (Slot < WRITE_QUEUE_SIZE)
                             {
-                                GWriteQueue[Slot].Actor          = Obj;
-                                GWriteQueue[Slot].Offset         = PS.Offset;
-                                GWriteQueue[Slot].Type           = PWT_LinearColor;
-                                GWriteQueue[Slot].NewValue.Col[0] = C[0];
-                                GWriteQueue[Slot].NewValue.Col[1] = C[1];
-                                GWriteQueue[Slot].NewValue.Col[2] = C[2];
-                                GWriteQueue[Slot].NewValue.Col[3] = C[3];
+                                GWriteQueue[Slot].Actor            = Obj;
+                                GWriteQueue[Slot].Offset           = PS.Offset;
+                                GWriteQueue[Slot].ArrayIdx         = -1;
+                                GWriteQueue[Slot].Type             = PWT_LinearColor;
+                                GWriteQueue[Slot].NewValue.Col[0]  = C[0];
+                                GWriteQueue[Slot].NewValue.Col[1]  = C[1];
+                                GWriteQueue[Slot].NewValue.Col[2]  = C[2];
+                                GWriteQueue[Slot].NewValue.Col[3]  = C[3];
                                 GWriteCount = Slot + 1;
                             }
                             GDetailRequest = Obj;
@@ -441,6 +552,8 @@ static void DrawPropertyInspector(UObject* Obj)
 
                     ImGui::PopID();
                 }
+                if (bArrayOpen)
+                    ImGui::TreePop();
                 ImGui::EndTable();
             }
         }
@@ -448,6 +561,17 @@ static void DrawPropertyInspector(UObject* Obj)
     }
 
     ImGui::EndChild();
+}
+
+// ---------------------------------------------------------------------------
+// Invalidate — call before map change / garbage collection.
+// ---------------------------------------------------------------------------
+
+void OLImGui_Scene_Invalidate()
+{
+    GSelectedObj = NULL;
+    GNavDepth    = 0;
+    for (int i = 0; i < 16; ++i) GNavStack[i] = NULL;
 }
 
 // ---------------------------------------------------------------------------
@@ -460,7 +584,10 @@ void OLImGui_TabScene()
     if (GSelectedObj)
     {
         if (GSelectedObj->IsPendingKill() || !GSelectedObj->IsValid())
+        {
             GSelectedObj = NULL;
+            GNavDepth    = 0;
+        }
         else
         {
             DrawPropertyInspector(GSelectedObj);
@@ -544,7 +671,8 @@ void OLImGui_TabScene()
             {
                 GSelectedObj   = Obj;
                 GDetailRequest = Obj;
-                GPropFilter[0] = '\0'; // reset property filter for new selection
+                GPropFilter[0] = '\0';
+                GNavDepth      = 0;    // fresh selection resets navigation stack
             }
 
             // Hover: show live world-capture preview for Actors and world components.
@@ -621,3 +749,4 @@ void OLImGui_TabScene()
 }
 
 #undef ENQUEUE_WRITE
+#undef ENQUEUE_ARRAY_WRITE

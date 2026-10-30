@@ -14,6 +14,7 @@ static volatile float GPendingRunningFOV      = -1.f;
 static volatile float GPendingCamcorderMinFOV = -1.f;
 static volatile float GPendingCamcorderMaxFOV = -1.f;
 static volatile float GPendingCamcorderNVFOV  = -1.f;
+static volatile float GPendingCinematicSensitivityAlpha = -1.f;
 
 static void ApplyMaxHealth_GameThread()
 {
@@ -37,6 +38,7 @@ static void ApplyRunningFOV_GameThread()      { float v = GPendingRunningFOV;   
 static void ApplyCamcorderMinFOV_GameThread() { float v = GPendingCamcorderMinFOV; GPendingCamcorderMinFOV = -1.f; OLCmd_SetCamcorderMinFOV(v);  }
 static void ApplyCamcorderMaxFOV_GameThread() { float v = GPendingCamcorderMaxFOV; GPendingCamcorderMaxFOV = -1.f; OLCmd_SetCamcorderMaxFOV(v);  }
 static void ApplyCamcorderNVFOV_GameThread()  { float v = GPendingCamcorderNVFOV;  GPendingCamcorderNVFOV  = -1.f; OLCmd_SetCamcorderNVMaxFOV(v); }
+static void ApplyCinematicSensitivityAlpha_GameThread() { float v = GPendingCinematicSensitivityAlpha; GPendingCinematicSensitivityAlpha = -1.f; OLCmd_SetCinematicSensitivityAlpha(v); }
 
 void OLImGui_TabPlayer()
 {
@@ -44,16 +46,16 @@ void OLImGui_TabPlayer()
 
     OL_T_SECTION("player.section.toggles");
     OL_TABLE_BEGIN("##player_btns", 3, true, 0)
-        OL_TABLE_CELL  OL_T_TOGGLE_B("player.ghost",    "player.toggle.ghost",         S.bGhost,              OLCmd_ToggleGhost);
-        OL_TABLE_CELL  OL_T_TOGGLE_B("player.bhop",     "player.toggle.bunnyhop",      S.bBunnyHop,           OLCmd_ToggleBunnyHop);
-        OL_TABLE_CELL  OL_T_TOGGLE_B("player.unl_bat",  "player.toggle.unlimited_bat", S.bUnlimitedBatteries, OLCmd_ToggleUnlimitedBatteries);
+        OL_TABLE_CELL  OL_T_TOGGLE_BD("player.ghost",    "player.toggle.ghost",         S.bGhost,              OLCmd_ToggleGhost,              "player.toggle.ghost.desc");
+        OL_TABLE_CELL  OL_T_TOGGLE_BD("player.bhop",     "player.toggle.bunnyhop",      S.bBunnyHop,           OLCmd_ToggleBunnyHop,           "player.toggle.bunnyhop.desc");
+        OL_TABLE_CELL  OL_T_TOGGLE_BD("player.unl_bat",  "player.toggle.unlimited_bat", S.bUnlimitedBatteries, OLCmd_ToggleUnlimitedBatteries, "player.toggle.unlimited_bat.desc");
     OL_TABLE_END
 
     OL_T_SECTION("player.section.hobble");
     {
         OL_TABLE_BEGIN("##hobble_btns", 2, true, 0)
-            OL_TABLE_CELL  OL_T_TOGGLE_B("player.limp",   "player.toggle.limp",   S.bLimping,  OLCmd_ToggleLimp);
-            OL_TABLE_CELL  OL_T_TOGGLE_B("player.hobble", "player.toggle.hobble", S.bHobbling, OLCmd_ToggleHobble);
+            OL_TABLE_CELL  OL_T_TOGGLE_BD("player.limp",   "player.toggle.limp",   S.bLimping,  OLCmd_ToggleLimp,   "player.toggle.limp.desc");
+            OL_TABLE_CELL  OL_T_TOGGLE_BD("player.hobble", "player.toggle.hobble", S.bHobbling, OLCmd_ToggleHobble, "player.toggle.hobble.desc");
         OL_TABLE_END
 
         static float sCurrent = 0.f;
@@ -82,10 +84,22 @@ void OLImGui_TabPlayer()
     OL_T_SECTION("player.section.camera");
     {
         OL_TABLE_BEGIN("##cam_btns", 3, true, 0)
-            OL_TABLE_CELL  OL_T_TOGGLE_B("player.freecam",    "player.toggle.freecam",       S.bFreeCam,      OLCmd_ToggleFreecam);
-            OL_TABLE_CELL  OL_T_TOGGLE_B("player.fixedcam",   "player.toggle.fixedcam",      S.bFixedCam,     OLCmd_ToggleFixedCam);
-            OL_TABLE_CELL  OL_T_TOGGLE_B("player.cam.smooth", "player.toggle.smooth_camera", S.bSmoothCamera, OLCmd_ToggleSmoothCamera);
+            OL_TABLE_CELL  OL_T_TOGGLE_BD("player.freecam",    "player.toggle.freecam",       S.bFreeCam,      OLCmd_ToggleFreecam,              "player.toggle.freecam.desc");
+            OL_TABLE_CELL  OL_T_TOGGLE_BD("player.fixedcam",   "player.toggle.fixedcam",      S.bFixedCam,     OLCmd_ToggleFixedCam,             "player.toggle.fixedcam.desc");
+            OL_TABLE_CELL  OL_T_TOGGLE_BD("player.cam.smooth", "player.toggle.smooth_camera", S.bCinematicSensitivity, OLCmd_ToggleCinematicSensitivity, "player.toggle.smooth_camera.desc");
         OL_TABLE_END
+
+        static float sCineAlpha = 0.08f;
+        static bool  sCineAlphaActive = false;
+        if (!sCineAlphaActive) sCineAlpha = S.CinematicSensitivityAlpha;
+        OL_T_L_SLIDER_F("player.cam.smooth_alpha", &sCineAlpha, 0.01f, 1.f);
+        if (ImGui::IsItemEdited())
+        {
+            sCineAlphaActive = true;
+            GPendingCinematicSensitivityAlpha = sCineAlpha;
+            OLImGui_EnqueueCall(ApplyCinematicSensitivityAlpha_GameThread);
+        }
+        if (!ImGui::IsAnyItemActive()) sCineAlphaActive = false;
 
         // FreeCam FOV + Speed
         static float sFreeCamFOV   = 90.f;
@@ -133,7 +147,7 @@ void OLImGui_TabPlayer()
     OL_T_SECTION("player.section.health");
     {
         OL_TABLE_BEGIN("##health_btns", 1, true, 0)
-            OL_TABLE_CELL  OL_T_TOGGLE_B("player.god", "player.toggle.god", S.bGodMode, OLCmd_ToggleGodMode);
+            OL_TABLE_CELL  OL_T_TOGGLE_BD("player.god", "player.toggle.god", S.bGodMode, OLCmd_ToggleGodMode, "player.toggle.god.desc");
         OL_TABLE_END
 
         static int  sMaxHealth    = 100;

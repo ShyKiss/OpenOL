@@ -1477,11 +1477,17 @@ public:
     virtual void cplist();
     virtual void ApplyCP(const FString& CPName);
     virtual void GiveItem(const FString& ItemName);
+    virtual void QuickSave();
+    virtual void QuickLoad();
     virtual void SetGamma(FLOAT newGamma);
     virtual void ResetDoors();
     virtual void ResetPushables();
     virtual void ResetWorldState();
+    virtual void ToggleDisableUnloadStreaming();
+    virtual void ToggleIgnoreLedgeMarkerCanSlide();
     virtual void ToggleMute();
+    virtual void ToggleImprovedAI();
+    virtual void ToggleCinematicSensitivity();
     virtual void DrawDebug();
     virtual void ActivateGS(FName gsName);
     virtual void ResetGS();
@@ -1552,6 +1558,16 @@ public:
         P_FINISH;
         this->GiveItem(ItemName);
     }
+    DECLARE_FUNCTION(execQuickSave)
+    {
+        P_FINISH;
+        this->QuickSave();
+    }
+    DECLARE_FUNCTION(execQuickLoad)
+    {
+        P_FINISH;
+        this->QuickLoad();
+    }
     DECLARE_FUNCTION(execSetGamma)
     {
         P_GET_FLOAT(newGamma);
@@ -1573,10 +1589,30 @@ public:
         P_FINISH;
         this->ResetWorldState();
     }
+    DECLARE_FUNCTION(execToggleDisableUnloadStreaming)
+    {
+        P_FINISH;
+        this->ToggleDisableUnloadStreaming();
+    }
+    DECLARE_FUNCTION(execToggleIgnoreLedgeMarkerCanSlide)
+    {
+        P_FINISH;
+        this->ToggleIgnoreLedgeMarkerCanSlide();
+    }
     DECLARE_FUNCTION(execToggleMute)
     {
         P_FINISH;
         this->ToggleMute();
+    }
+    DECLARE_FUNCTION(execToggleImprovedAI)
+    {
+        P_FINISH;
+        this->ToggleImprovedAI();
+    }
+    DECLARE_FUNCTION(execToggleCinematicSensitivity)
+    {
+        P_FINISH;
+        this->ToggleCinematicSensitivity();
     }
     DECLARE_FUNCTION(execDrawDebug)
     {
@@ -2618,6 +2654,7 @@ public:
     virtual void NotifyHandlesToRepath();
     virtual void NotifyHandlesToWait();
     virtual void SoftDestroy();
+    virtual void ForceInit();
     DECLARE_FUNCTION(execScriptGetCenterLocation)
     {
         P_FINISH;
@@ -2727,6 +2764,11 @@ public:
     {
         P_FINISH;
         this->SoftDestroy();
+    }
+    DECLARE_FUNCTION(execForceInit)
+    {
+        P_FINISH;
+        this->ForceInit();
     }
     void eventBreakDoor(class AOLPawn* Breaker,UBOOL bReversed)
     {
@@ -7066,6 +7108,12 @@ struct OLPlayerController_eventEndPlacementMode_Parms
     {
     }
 };
+struct OLPlayerController_eventDetachPlacementMode_Parms
+{
+    OLPlayerController_eventDetachPlacementMode_Parms(EEventParm)
+    {
+    }
+};
 struct OLPlayerController_eventBeginPlacementMode_Parms
 {
     class AActor* Ghost;
@@ -7202,6 +7250,9 @@ public:
     FLOAT SlowDownFactor;
     class AActor* PlacementGhost;
     FLOAT PlacementYaw;
+    FLOAT PlacementPitch;
+    FLOAT PlacementRadius;
+    FLOAT PlacementDistance;
     //## END PROPS OLPlayerController
 
     virtual void NativePlayerMove(FLOAT DeltaTime);
@@ -7593,6 +7644,10 @@ public:
     void eventEndPlacementMode()
     {
         ProcessEvent(FindFunctionChecked(OLGAME_EndPlacementMode),NULL);
+    }
+    void eventDetachPlacementMode()
+    {
+        ProcessEvent(FindFunctionChecked(OLGAME_DetachPlacementMode),NULL);
     }
     void eventBeginPlacementMode(class AActor* Ghost)
     {
@@ -8732,11 +8787,17 @@ AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execIsViewModeUnlit);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execResetGS);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execActivateGS);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execDrawDebug);
+AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execToggleCinematicSensitivity);
+AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execToggleImprovedAI);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execToggleMute);
+AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execToggleIgnoreLedgeMarkerCanSlide);
+AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execToggleDisableUnloadStreaming);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execResetWorldState);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execResetPushables);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execResetDoors);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execSetGamma);
+AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execQuickLoad);
+AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execQuickSave);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execGiveItem);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execApplyCP);
 AUTOGENERATE_FUNCTION(UOLCheatManager,-1,execcplist);
@@ -8754,6 +8815,7 @@ AUTOGENERATE_FUNCTION(AOLCheckpointList,-1,execScript_TriggerAllApplyCheckpointS
 AUTOGENERATE_FUNCTION(AOLCheckpointList,-1,execScript_IsUnreached);
 AUTOGENERATE_FUNCTION(UOLConsole,-1,execAddCustomCommandsToAutoComplete);
 AUTOGENERATE_FUNCTION(UOLDLCManager,-1,execFindAndInstallDLC);
+AUTOGENERATE_FUNCTION(AOLDoor,-1,execForceInit);
 AUTOGENERATE_FUNCTION(AOLDoor,-1,execSoftDestroy);
 AUTOGENERATE_FUNCTION(AOLDoor,-1,execNotifyHandlesToWait);
 AUTOGENERATE_FUNCTION(AOLDoor,-1,execNotifyHandlesToRepath);
@@ -9196,11 +9258,17 @@ FNativeFunctionLookup GOLGameUOLCheatManagerNatives[] =
 	MAP_NATIVE(UOLCheatManager, execResetGS)
 	MAP_NATIVE(UOLCheatManager, execActivateGS)
 	MAP_NATIVE(UOLCheatManager, execDrawDebug)
+	MAP_NATIVE(UOLCheatManager, execToggleCinematicSensitivity)
+	MAP_NATIVE(UOLCheatManager, execToggleImprovedAI)
 	MAP_NATIVE(UOLCheatManager, execToggleMute)
+	MAP_NATIVE(UOLCheatManager, execToggleIgnoreLedgeMarkerCanSlide)
+	MAP_NATIVE(UOLCheatManager, execToggleDisableUnloadStreaming)
 	MAP_NATIVE(UOLCheatManager, execResetWorldState)
 	MAP_NATIVE(UOLCheatManager, execResetPushables)
 	MAP_NATIVE(UOLCheatManager, execResetDoors)
 	MAP_NATIVE(UOLCheatManager, execSetGamma)
+	MAP_NATIVE(UOLCheatManager, execQuickLoad)
+	MAP_NATIVE(UOLCheatManager, execQuickSave)
 	MAP_NATIVE(UOLCheatManager, execGiveItem)
 	MAP_NATIVE(UOLCheatManager, execApplyCP)
 	MAP_NATIVE(UOLCheatManager, execcplist)
@@ -9243,6 +9311,7 @@ FNativeFunctionLookup GOLGameUOLDLCManagerNatives[] =
 
 FNativeFunctionLookup GOLGameAOLDoorNatives[] = 
 { 
+	MAP_NATIVE(AOLDoor, execForceInit)
 	MAP_NATIVE(AOLDoor, execSoftDestroy)
 	MAP_NATIVE(AOLDoor, execNotifyHandlesToWait)
 	MAP_NATIVE(AOLDoor, execNotifyHandlesToRepath)
@@ -9787,7 +9856,7 @@ VERIFY_CLASS_OFFSET_NODIE(AOLGameplayItemPickup,OLGameplayItemPickup,ItemName)
 VERIFY_CLASS_OFFSET_NODIE(AOLGameplayItemPickup,OLGameplayItemPickup,PickupSound)
 VERIFY_CLASS_SIZE_NODIE(AOLGameplayItemPickup)
 VERIFY_CLASS_OFFSET_NODIE(AOLPlayerController,OLPlayerController,HeroPawn)
-VERIFY_CLASS_OFFSET_NODIE(AOLPlayerController,OLPlayerController,PlacementYaw)
+VERIFY_CLASS_OFFSET_NODIE(AOLPlayerController,OLPlayerController,PlacementDistance)
 VERIFY_CLASS_SIZE_NODIE(AOLPlayerController)
 VERIFY_CLASS_OFFSET_NODIE(UOLPlayerInput,OLPlayerInput,GPBindingsA)
 VERIFY_CLASS_OFFSET_NODIE(UOLPlayerInput,OLPlayerInput,GamepadConfig)

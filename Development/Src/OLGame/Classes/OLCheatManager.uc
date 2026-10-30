@@ -553,6 +553,13 @@ exec native function ApplyCP(string CPName);
 
 exec native function GiveItem(string ItemName);
 
+// Debug-only quick save/load: stores the player's exact position/rotation and
+// current map, independent of the OLCheckpoint/CheckpointRecord system (which
+// only ever restores to a level-placed checkpoint actor, never a free position).
+// Does not touch progress data (battery/documents/objectives) at all.
+exec native function QuickSave();
+exec native function QuickLoad();
+
 //>> FOR DEBUGGING
 exec function SaveGame(string Filename)
 {
@@ -595,6 +602,18 @@ exec native function ResetDoors();
 exec native function ResetPushables();
 exec native function ResetWorldState();
 
+// Toggles whether streaming levels are allowed to unload once no player viewpoint
+// remains inside their LevelStreamingVolume.  Enabling it also forces every currently
+// known streaming level to load and become visible, so the whole level layout stays
+// resident for debugging (e.g. flying around with FreeCam to inspect streaming seams).
+exec native function ToggleDisableUnloadStreaming();
+
+// Temporary workaround: OLLedgeMarker::bCanSlide isn't set on any marker in the current
+// level data, making SMT_SlideOver (slide over a low obstacle while running) unreachable
+// everywhere even though the rest of its conditions are fine. Enabling this makes the
+// bCanSlide check on the marker pass unconditionally, as if every marker had it set.
+exec native function ToggleIgnoreLedgeMarkerCanSlide();
+
 exec function InflictDamage(optional float amount)
 {
 	if (!bCheatsEnabled)
@@ -618,6 +637,8 @@ exec function KillPlayer()
 }
 
 exec native function ToggleMute();
+exec native function ToggleImprovedAI();
+exec native function ToggleCinematicSensitivity();
 
 native function DrawDebug();
 
@@ -1164,4 +1185,24 @@ exec function ScaleHero(float Scale)
     Hero.HobblingRunSpeed  *= Ratio;
     Hero.JumpZ             *= Ratio;
     Hero.AccelRate         *= Ratio;
+}
+
+exec function SpawnActor(string ClassName)
+{
+    local class<Actor> NewClass;
+    local vector SpawnLoc;
+
+    NewClass = class<Actor>(DynamicLoadObject(ClassName, class'Class'));
+    if (NewClass == None)
+    {
+        `log("SpawnActor: class not found: " $ ClassName);
+        return;
+    }
+
+    if (Pawn != None)
+        SpawnLoc = Pawn.Location;
+    else
+        SpawnLoc = Location;
+
+    Spawn(NewClass,,, SpawnLoc + 72 * Vector(Rotation) + vect(0,0,1) * 15,,, true);
 }

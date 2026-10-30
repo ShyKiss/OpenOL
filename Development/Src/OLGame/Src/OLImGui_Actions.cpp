@@ -48,6 +48,18 @@ static void SpawnPylonOnGameThread()
 
 #endif
 
+// Reopens the current map with TASGame as the GameInfo (?game=TASGame.TASGame), the same
+// "open <map>?game=..." travel path used elsewhere (see OLPlayerController.cpp's DemoMapName
+// open call). Restarts the level - not a live GameInfo swap.
+static void OpenCurrentMapAsTASGameOnGameThread()
+{
+    if (!GWorld || !GEngine)
+        return;
+
+    FString MapName = GWorld->GetMapName();
+    GEngine->Exec(*(FString(TEXT("open ")) + MapName + TEXT("?game=TASGame.TASGame")));
+}
+
 void OLImGui_TabActions()
 {
     OL_T_SECTION("actions.section.dummyhead");
@@ -62,4 +74,9 @@ void OLImGui_TabActions()
     if (ImGui::Button("Spawn Pylon"))
         OLImGui_EnqueueCall(SpawnPylonOnGameThread);
 #endif
+
+    ImGui::Separator();
+    if (ImGui::Button("Restart Map as TASGame"))
+        OLImGui_EnqueueCall(OpenCurrentMapAsTASGameOnGameThread);
+    ImGui::TextDisabled("Console: open <map>?game=TASGame.TASGame");
 }

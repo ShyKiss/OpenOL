@@ -4,6 +4,7 @@
 =============================================================================*/
 
 #include "UnrealEd.h"
+#include <shlobj.h>
 #include "EngineAIClasses.h"
 #include "EngineMaterialClasses.h"
 #include "EngineSoundClasses.h"
@@ -9402,7 +9403,26 @@ if (Platform & (PLATFORM_Mobile | PLATFORM_MacOSX | PLATFORM_WiiU))
 		// Must be set via -shippingdir= (no default, since our own CookedPCConsole lacks the original PCD).
 		if (!Parse(appCmdLine(), TEXT("SHIPPINGDIR="), ModCookShippingDir))
 		{
-			warnf(NAME_Warning, TEXT("ModCook: -shippingdir= not specified; shipping PCD unavailable, all textures will be re-cooked"));
+			// No -shippingdir= on command line — open a folder picker so the user can locate
+			// the original CookedPCConsole directory interactively.
+			BROWSEINFOW bi = {};
+			bi.lpszTitle   = L"Select original CookedPCConsole directory (for ModCook shipping PCD)";
+			bi.ulFlags     = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+			LPITEMIDLIST pidl = SHBrowseForFolderW(&bi);
+			if (pidl)
+			{
+				WCHAR szPath[MAX_PATH] = {};
+				if (SHGetPathFromIDListW(pidl, szPath))
+				{
+					ModCookShippingDir = FString(szPath);
+				}
+				CoTaskMemFree(pidl);
+			}
+
+			if (ModCookShippingDir.IsEmpty())
+			{
+				warnf(NAME_Warning, TEXT("ModCook: -shippingdir= not specified; shipping PCD unavailable, all textures will be re-cooked"));
+			}
 		}
 		if (ModCookShippingDir.Len() && !ModCookShippingDir.EndsWith(TEXT("\\")))
 			ModCookShippingDir += TEXT("\\");

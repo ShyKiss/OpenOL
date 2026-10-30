@@ -41,6 +41,50 @@ static void DrawLanguageSection()
 }
 
 // ---------------------------------------------------------------------------
+// Placement section — rotation step combo
+// ---------------------------------------------------------------------------
+
+extern INT GPlacementRotStep;
+
+static void DrawPlacementSection()
+{
+    OL_T_SECTION("system.section.placement");
+
+    // Steps: 65536/N for N in {64, 32, 16, 8, 4, 2}
+    // Labels show degrees (360/N) and fraction (1/N).
+    static const char* Labels[] = {
+        "1/128 (~2.8\xc2\xb0)",
+        "1/64  (~5.6\xc2\xb0)",
+        "1/32  (~11.3\xc2\xb0)",
+        "1/16  (~22.5\xc2\xb0)",
+        "1/8   (~45\xc2\xb0)",
+        "1/4   (~90\xc2\xb0)",
+        "1/2   (~180\xc2\xb0)",
+    };
+    static const INT Steps[] = {
+        65536 / 128,
+        65536 / 64,
+        65536 / 32,
+        65536 / 16,
+        65536 / 8,
+        65536 / 4,
+        65536 / 2,
+    };
+    static const int StepCount = ARRAY_COUNT(Steps);
+
+    // Find current index.
+    int Cur = 3; // default to 1/16
+    for (int i = 0; i < StepCount; ++i)
+        if (Steps[i] == GPlacementRotStep) { Cur = i; break; }
+
+    ImGui::TextUnformatted(OLLocale_T("system.placement.rot_step"));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::Combo("##rot_step", &Cur, Labels, StepCount))
+        GPlacementRotStep = Steps[Cur];
+}
+
+// ---------------------------------------------------------------------------
 // Keybindings section — overlay toggle key
 // ---------------------------------------------------------------------------
 
@@ -88,5 +132,6 @@ static void DrawKeybindingsSection()
 void OLImGui_TabSystem()
 {
     DrawLanguageSection();
+    DrawPlacementSection();
     DrawKeybindingsSection();
 }

@@ -409,6 +409,9 @@ void OLImGui_ToggleOverlay()
     if (GImGuiShowDemoWindow)
     {
         IO.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+        OLImGui_Console_RequestFocus();
+        OLSpawns_Props_BeginScan();
+        OLSpawns_ResetHubPreviews();
     }
     else
     {

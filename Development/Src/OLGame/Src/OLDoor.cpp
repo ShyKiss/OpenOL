@@ -296,6 +296,11 @@ void AOLDoor::OrientSubMeshes()
 	BrokenBackwardMesh->ConditionalUpdateTransform();
 }
 
+void AOLDoor::ForceInit()
+{
+	Init();
+}
+
 void AOLDoor::Init()
 {
 	if (DoorMeshType == DMesh_Undefined)

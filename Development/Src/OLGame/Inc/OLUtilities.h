@@ -130,12 +130,43 @@ namespace Utils
 	void OutputTextToConsole(const FString& text);
 
 	AActor* SpawnActorFromPackage(const FString& PackageName, UClass* ActorClass, FName ActorTag = NAME_None);
+	FString  FindModPackageFile(const FString& PackageName);
 	UObject* LoadObjectFromModPackage(const FString& PackageName, const FString& ObjectName, UClass* ObjectClass);
+	UObject* LoadObjectFromModPackage(const FString& PackageName, const FString& ObjectName, UClass* ObjectClass, ULinkerLoad*& OutLinker);
+
+	// Fired on game thread when async load completes. Result is NULL on failure.
+	typedef void (*FAsyncObjectCallback)(UObject* Result, void* UserData);
+
+	// Kick off async load: IO happens in IO thread, UObject work on game thread next tick.
+	// If PackageName is empty, object is already in memory — callback fires immediately.
+	// Call TickAsyncObjectLoader() each game tick to drive completion.
+	void LoadObjectFromModPackageAsync(const FString& PackageName, const FString& ObjectName,
+	                                   UClass* ObjectClass, FAsyncObjectCallback Callback, void* UserData);
+
+	// Drive pending async object requests. Call once per game tick while menu is open.
+	void TickAsyncObjectLoader();
+	UStaticMesh* LoadStaticMeshWithMaterials(const FString& PackageName, const FString& MeshName);
+
+	// Staged, non-blocking mesh load.  Disk IO and LZO decompression stay on the IO
+	// thread; the game thread only ever touches data already resident in the loader's
+	// precache buffer, so it never busy-waits.  Packages are not read into RAM whole.
+	//
+	// Usage: BeginStaticMeshLoad() once, then StepStaticMeshLoad() each tick until it
+	// returns TRUE.  ResetStaticMeshLoad() abandons a load and frees the precache buffers.
+	void BeginStaticMeshLoad(const FString& PackageName, const FString& MeshName);
+	UBOOL StepStaticMeshLoad(UStaticMesh*& OutMesh);
+	void ResetStaticMeshLoad();
+	// Frees the loader precache buffers; blocks on pending IO, so call it only
+	// when no load is in flight (e.g. when the preview UI closes).
+	void FlushStaticMeshLoadCache();
 	// Load any mod package (upk or udk) by short name. No AddToRoot — caller decides lifetime.
 	// Returns NULL if not found or failed to load.
 	UPackage* LoadModPackage(const FString& PackageName);
 
 }
+
+// Applies 00_Replace map substitutions to the level name list before loading.
+void OLUtils_ApplyMapReplacements(TArray<FName>& InOutLevelNames);
 
 // ---------------------------------------------------------------------------
 // UTF-8 helpers shared by multiplayer packet encode/decode

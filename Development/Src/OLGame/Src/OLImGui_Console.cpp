@@ -204,7 +204,13 @@ static int HistoryCallback(ImGuiInputTextCallbackData* Data)
 // ---------------------------------------------------------------------------
 
 static char   SInputBuf[256]  = {};
-static bool   SReclaimFocus   = false;
+static volatile bool SReclaimFocus = false;
+
+void OLImGui_Console_RequestFocus()
+{
+    SReclaimFocus = true;
+}
+
 static bool   SScrollToBottom = true;
 static int    SACSelected     = 0;
 static char   SFillBuf[256]   = {}; // set by AC click; written into InputText via CallbackAlways
@@ -228,6 +234,16 @@ static int InputCallback(ImGuiInputTextCallbackData* Data)
             SFillPending = false;
             // SPendingTyped already set to SFillBuf by the click handler; UpdateAC already queued.
         }
+        return 0;
+    }
+
+    // Block the toggle key's character from being typed into the field.
+    if (Data->EventFlag & ImGuiInputTextFlags_CallbackCharFilter)
+    {
+        ImGuiKey ToggleKey = (ImGuiKey)OLImGui_GetOverlayToggleImKey();
+        if (ToggleKey != ImGuiKey_None &&
+            (ImGui::IsKeyDown(ToggleKey) || ImGui::IsKeyReleased(ToggleKey)))
+            return 1; // discard character
         return 0;
     }
 
@@ -309,6 +325,7 @@ void OLImGui_Console_Draw()
         ImGuiInputTextFlags_CallbackHistory     |
         ImGuiInputTextFlags_CallbackEdit        |
         ImGuiInputTextFlags_CallbackCompletion  |
+        ImGuiInputTextFlags_CallbackCharFilter  |
         ImGuiInputTextFlags_CallbackAlways;
 
     ImGui::SetNextItemWidth(-1.f);

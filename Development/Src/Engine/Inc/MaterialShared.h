@@ -18,6 +18,11 @@ extern EMaterialShaderQuality GCookingMaterialQuality;
 extern UBOOL GForceMinimalShaderCompilation;
 #endif
 
+/** TRUE when there is no shader source to compile from; static permutations then
+ *  resolve via InitShaderMap (cache lookup only) instead of CacheShaders, which
+ *  would drop the existing shader map on its way to a guaranteed failure. */
+extern UBOOL GNoShaderSourceAvailable;
+
 #define ME_CAPTION_HEIGHT		18
 #define ME_STD_VPADDING			16
 #define ME_STD_HPADDING			32

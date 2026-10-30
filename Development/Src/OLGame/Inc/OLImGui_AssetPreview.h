@@ -36,15 +36,22 @@ struct FOLPreviewInstance
     // Set the mesh to display. Game thread only.
     void SetSkeletalMesh(USkeletalMesh* Mesh);
     // Set skeletal mesh and play a looping animation from the given AnimSet.
-    // AnimSetPkg/"" + AnimSetObj — passed to LoadObjectFromModPackage; IdleAnimName — e.g. "Idle".
+    // Mesh is applied immediately; AnimSet is loaded async — animation starts on next tick after load.
     void SetSkeletalMeshWithAnim(USkeletalMesh* Mesh, const char* AnimSetPkg, const char* AnimSetObj, const char* IdleAnimName);
+    // Apply a pre-loaded AnimSet directly (called from async callback).
+    void ApplyAnimSet(UAnimSet* AnimSet, const char* IdleAnimName);
 
     // Attach a static mesh weapon to a bone on the skeletal mesh. Pass NULL to detach.
     void AttachWeaponToBone(UStaticMesh* Mesh, const char* BoneName);
     void SetStaticMesh(UStaticMesh* Mesh);
+    void SetStaticMeshMaterial(INT Slot, UMaterialInterface* Mat);
 
     // Re-render and update the texture. Call each game tick.
     void Tick(float YawDeg, float FOVDeg);
+
+    // Throttle rendering to every N game ticks (1 = every frame, default).
+    // Animation still advances every tick; only GPU work is skipped.
+    void SetRenderInterval(int N);
 
     // Returns D3D9 texture ready for ImGui::Image, or NULL. Safe from render thread.
     void* GetImTextureID() const;

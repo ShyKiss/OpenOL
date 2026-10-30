@@ -10,7 +10,8 @@ void OLCmd_ToggleBunnyHop();
 void OLCmd_ToggleLimp();
 void OLCmd_ToggleHobble();
 void OLCmd_SetHobblingIntensity(float Current, float Target);
-void OLCmd_ToggleSmoothCamera();
+void OLCmd_ToggleCinematicSensitivity();
+void OLCmd_SetCinematicSensitivityAlpha(float Alpha);
 void OLCmd_SetFreeCamFOV(float FOV);
 void OLCmd_SetFreeCamSpeed(float Speed);
 void OLCmd_SetDefaultFOV(float FOV);
@@ -40,7 +41,8 @@ struct FOLPlayerState
     bool  bUnlimitedBatteries;
     int   MaxHealth;   // AOLHero::HealthMax (APawn base)
     bool  bCheckpointListAvailable;
-    bool  bSmoothCamera;
+    bool  bCinematicSensitivity;
+    float CinematicSensitivityAlpha;
     float FreeCamFOV;
     float FreeCamSpeed;
     float DefaultFOV;

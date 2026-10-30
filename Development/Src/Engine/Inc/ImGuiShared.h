@@ -31,13 +31,15 @@ enum EPropSnapType
     PST_Color,        // FColor        — 4 BYTE (R,G,B,A), stored as FLOAT[4] normalized
     PST_LinearColor,  // FLinearColor  — 4 FLOAT (R,G,B,A)
     PST_Texture,      // UTexture2D*   — preview image; pointer stored in TexPtr
+    PST_ArrayHeader,  // sentinel row: Name = array prop name, Value.Int = element count
 };
 
 struct FPropSnap
 {
     char            Name[SNAP_NAME_LEN];
     EPropSnapType   Type;
-    INT             Offset;
+    INT             Offset;    // byte offset of the property (or TArray base for array elems)
+    INT             ArrayIdx;  // -1 = not an array element; >= 0 = index inside TArray
     BITFIELD        BitMask;
     TArray<FString> EnumValues;
     union
@@ -73,12 +75,20 @@ struct FDetailSnap
 
 static const int WRITE_QUEUE_SIZE = 64;
 
-enum EPropWriteType { PWT_Bool, PWT_Int, PWT_Float, PWT_Byte, PWT_Str, PWT_Name, PWT_Vector, PWT_Rotator, PWT_Color, PWT_LinearColor };
+enum EPropWriteType
+{
+    PWT_Bool, PWT_Int, PWT_Float, PWT_Byte, PWT_Str, PWT_Name,
+    PWT_Vector, PWT_Rotator, PWT_Color, PWT_LinearColor,
+    // Array element writes — Offset points to TArray<T>, ArrayIdx selects element.
+    PWT_ArrayBool, PWT_ArrayInt, PWT_ArrayFloat, PWT_ArrayByte,
+    PWT_ArrayStr, PWT_ArrayName,
+};
 
 struct FPropWrite
 {
     UObject*       Actor;
     INT            Offset;
+    INT            ArrayIdx;  // -1 for non-array writes; >= 0 for PWT_Array* types
     EPropWriteType Type;
     BITFIELD       BitMask;
     union
@@ -112,6 +122,18 @@ extern volatile int GWriteCount;
 
 // Overlay visibility flag — defined in D3D9Drv, read in OLGame (ticker skip).
 extern bool GImGuiShowDemoWindow;
+
+// Request keyboard focus on the ImGui console input field next frame.
+// Defined in OLGame/Src/OLImGui_Console.cpp, called from D3D9Drv on overlay open.
+void OLImGui_Console_RequestFocus();
+
+// Kick off props package enumeration. Safe to call multiple times — no-ops once started.
+// Defined in OLGame/Src/OLImGui_Spawns_Props.cpp, called from D3D9Drv on overlay open.
+void OLSpawns_Props_BeginScan();
+
+// Reset hub tile previews so a new random asset is picked on next menu open.
+// Defined in OLGame/Src/OLImGui_Spawns.cpp, called from D3D9Drv on overlay open.
+void OLSpawns_ResetHubPreviews();
 
 // Set to 1 by OLGame when the HUD needs mouse input (e.g. Connecting banner Cancel button)
 // without the debug window being open. OLImGui_IsOverlayVisible() returns true while set.

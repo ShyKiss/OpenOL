@@ -27,6 +27,42 @@ static void gen_session_token(uint8_t out[32]) {
 #define SRV_DISCONNECT   0xE3
 #define SRV_DOOR_DENY    0xE4
 
+/* Client→server 2-byte header: [channel][type][player_id LE4][payload...] */
+#define CH_SRV   0x00
+#define CH_HERO  0x01
+#define CH_DOOR  0x02
+#define CH_ENEMY 0x03
+#define CH_PUSH  0x04
+#define CH_WORLD 0x05
+#define SRV_HELLO 0x01
+#define SRV_PING  0x02
+#define HERO_STATE          0x01
+#define HERO_NICK           0x02
+#define HERO_SMT_TYPE       0x06
+#define HERO_PLAYER_LIFECYCLE 0x08
+#define DOOR_LOCK   0x01
+#define DOOR_UNLOCK 0x02
+#define DOOR_STATE  0x03
+#define DOOR_OPEN   0x04
+#define DOOR_CLOSE  0x05
+#define DOOR_ANGLE  0x06
+#define DOOR_INIT   0x09
+#define ENEMY_SPAWN      0x01
+#define ENEMY_DEL        0x02
+#define ENEMY_SMT        0x03
+#define ENEMY_LOC        0x08
+#define PUSH_STATE  0x01
+#define PUSH_DENIED 0x02
+#define PUSH_INIT   0x03
+#define WORLD_TRIGGER_ACT    0x01
+#define WORLD_PICKUP_STATE   0x03
+#define WORLD_PICKUP_KISMET  0x06
+#define WORLD_DISCONNECT     0x08
+#define WORLD_REQUEST_ENEMIES   0x0A
+#define WORLD_REQUEST_DOORS     0x0B
+#define WORLD_REQUEST_PUSHABLES 0x0C
+#define WORLD_MATINEE_STATE  0x0D
+
 // ---------------------------------------------------------------------------
 // Logging — writes to history ring (consumed by ImGui panel on game thread)
 // ---------------------------------------------------------------------------
@@ -409,6 +445,14 @@ PushSnapshot *push_alloc(Server *s, int room_idx, const char *key) {
     return NULL;
 }
 
+void push_release_owner(Server *s, int room_idx, int player_id) {
+    for (int i = 0; i < MAX_PUSH_SNAPSHOTS; i++) {
+        PushSnapshot *ps = &s->pushables[i];
+        if (ps->used && ps->room_idx == room_idx && ps->owner_player_id == player_id)
+            ps->owner_player_id = 0;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot drip-feed queue
 // ---------------------------------------------------------------------------
@@ -477,11 +521,20 @@ void send_snapshots_to_newcomer(Server *s, Player *newcomer) {
         if (e->smt_len   > 0) server_snap_enqueue(newcomer, e->smt_pkt,   e->smt_len);
         if (e->loc_len   > 0) server_snap_enqueue(newcomer, e->loc_pkt,   e->loc_len);
     }
-    // Pushable snapshots
-    for (int i = 0; i < MAX_PUSH_SNAPSHOTS; i++) {
-        PushSnapshot *ps = &s->pushables[i];
-        if (!ps->used || ps->room_idx != newcomer->room_idx) continue;
-        if (ps->pkt_len > 0) server_snap_enqueue(newcomer, ps->pkt, ps->pkt_len);
+    // Pushable snapshots — always send with bPushing=0 (offset 26) so newcomers
+    // don't start a looping sound for a push that is no longer active.
+    {
+        int i;
+        for (i = 0; i < MAX_PUSH_SNAPSHOTS; i++) {
+            PushSnapshot *ps = &s->pushables[i];
+            if (!ps->used || ps->room_idx != newcomer->room_idx) continue;
+            if (ps->pkt_len > 0) {
+                char tmp[MAX_PUSH_SNAP_DATA];
+                memcpy(tmp, ps->pkt, ps->pkt_len);
+                if (ps->pkt_len > 26) tmp[26] = 0; /* clear bPushing */
+                server_snap_enqueue(newcomer, tmp, ps->pkt_len);
+            }
+        }
     }
     // Pickup snapshots
     for (int i = 0; i < MAX_PICKUP_SNAPSHOTS; i++) {
@@ -507,6 +560,8 @@ void server_disconnect(Server *s, Player *p) {
     door_release_authority(s, room_idx, pid);
     // Remove all enemy snapshots owned by this player
     enemy_remove_all_for_player(s, room_idx, pid);
+    // Release any pushable ownership this player held
+    push_release_owner(s, room_idx, pid);
 
     memset(p, 0, sizeof(*p));   // mark as free
 
@@ -600,6 +655,8 @@ static void handle_hello(Server *s, const char *line, const Addr *addr) {
 
     char client_ip[MAX_IP];
     addr_ip_str(addr, client_ip, sizeof(client_ip));
+
+    server_log(s, "[%s] HELLO room='%s' pass='%s'", client_ip, code, password);
 
     if (!hello_check_rate(client_ip)) {
         // Silently drop — don't send a response (prevents amplification)
@@ -736,33 +793,41 @@ static void handle_hello(Server *s, const char *line, const Addr *addr) {
 void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
     if (len <= 0) return;
 
-    // Binary packet: first byte < 0x80 (all game packets) or >= 0xE0 (server→client notifications).
+    // Binary packet: [channel(1)][type(1)][player_id LE uint32(4)][payload...]
+    // Channel 0x00..0x05 — client game packets.
     // HELLO starts with 'H' (0x48) and is handled separately below.
-    // Layout: [type(1)] [player_id LE uint32(4)] [payload...]
-    if ((unsigned char)data[0] < 0x80 && (unsigned char)data[0] != 'H') {
-        if (len < 5) return;
-        uint32_t player_id =
-            (unsigned char)data[1]        |
-            ((unsigned char)data[2] << 8) |
-            ((unsigned char)data[3] << 16)|
-            ((unsigned char)data[4] << 24);
-        Player *pl = server_find_player_by_id(s, (int)player_id);
+    if ((unsigned char)data[0] <= 0x05) {
+        unsigned char channel, ptype;
+        uint32_t player_id;
+        Player *pl;
+        int sender_slot;
+        const char *room;
+
+        if (len < 6) return;
+        channel = (unsigned char)data[0];
+        ptype   = (unsigned char)data[1];
+        player_id =
+            (unsigned char)data[2]        |
+            ((unsigned char)data[3] << 8) |
+            ((unsigned char)data[4] << 16)|
+            ((unsigned char)data[5] << 24);
+        pl = server_find_player_by_id(s, (int)player_id);
         if (!pl || !addr_eq(&pl->addr, addr)) return;
         pl->last_seen = mono_now();
         if (!check_rate(pl)) return;
 
-        // Binary HELLO (0x02) — client sends nick after READY
-        if ((unsigned char)data[0] == 0x02) {
-            // Layout: [0x02][player_id LE 4][nick_len(1)][nick bytes...]
-            if (len >= 7) {
-                unsigned char nick_len = (unsigned char)data[5];
-                int max_nick = len - 6;
+        // CH_SRV: HELLO and PING
+        if (channel == CH_SRV) {
+            if (ptype == SRV_HELLO && len >= 8) {
+                unsigned char nick_len = (unsigned char)data[6];
+                int max_nick = len - 7;
+                char clean[MAX_NICK];
+                int ci = 0, i;
+                memset(clean, 0, sizeof(clean));
                 if (nick_len > max_nick) nick_len = (unsigned char)max_nick;
                 if (nick_len > MAX_NICK - 1) nick_len = MAX_NICK - 1;
-                char clean[MAX_NICK] = {0};
-                int ci = 0;
-                for (int i = 0; i < nick_len && ci < MAX_NICK - 1; i++) {
-                    char c = data[6 + i];
+                for (i = 0; i < nick_len && ci < MAX_NICK - 1; i++) {
+                    char c = data[7 + i];
                     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
                         (c >= '0' && c <= '9') || c == '_')
                         clean[ci++] = c;
@@ -772,104 +837,91 @@ void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
                 pl->nick[MAX_NICK - 1] = '\0';
                 server_log(s, "[%s] ID=%d identified as '%s'", pl->ip, pl->id, pl->nick);
                 history_push(s, "[%s] identified", pl->nick);
-                // Broadcast nick to all other players in the room
+            } else if (ptype == SRV_PING) {
+                server_send(s, addr, data, len);
             }
-            return; // HELLO is not relayed
-        }
-
-        // PING (0x08) — echo back as-is, not relayed
-        if ((unsigned char)data[0] == 0x08) {
-            server_send(s, addr, data, len);
             return;
         }
 
-        // Store STATE snapshot (type 0x01) for newcomer sync
-        if ((unsigned char)data[0] == 0x01) {
+        // CH_HERO: STATE snapshot
+        if (channel == CH_HERO && ptype == HERO_STATE) {
             int snap_len = len < (int)sizeof(pl->state_snap) ? len : (int)sizeof(pl->state_snap);
             memcpy(pl->state_snap, data, snap_len);
             pl->state_snap_len = snap_len;
         }
 
-        // Store MATINEE_STATE snapshot (type 0x27) for newcomer sync
-        if ((unsigned char)data[0] == 0x27) {
-            int snap_len = len < (int)sizeof(pl->matinee_snap) ? len : (int)sizeof(pl->matinee_snap);
-            memcpy(pl->matinee_snap, data, snap_len);
-            pl->matinee_snap_len = snap_len;
-        }
-
-        // DISCONNECT (0x24) — disconnect this player, do not relay
-        if ((unsigned char)data[0] == 0x24) {
-            server_disconnect(s, pl);
-            return;
-        }
-
-        // REQUEST_ENEMIES (0x26) — respond with enemy snapshots, do not relay
-        if ((unsigned char)data[0] == 0x26) {
-            for (int i = 0; i < MAX_ENEMY_SNAPSHOTS; i++) {
-                EnemySnapshot *e = &s->enemies[i];
-                if (!e->used || e->room_idx != pl->room_idx) continue;
-                if (e->owner_player_id == pl->id) continue;
-                if (e->spawn_len > 0) server_send(s, &pl->addr, e->spawn_pkt, e->spawn_len);
-                if (e->smt_len > 0)   server_send(s, &pl->addr, e->smt_pkt,   e->smt_len);
-                if (e->loc_len > 0)   server_send(s, &pl->addr, e->loc_pkt,   e->loc_len);
+        // CH_WORLD: special types
+        if (channel == CH_WORLD) {
+            if (ptype == WORLD_MATINEE_STATE) {
+                int snap_len = len < (int)sizeof(pl->matinee_snap) ? len : (int)sizeof(pl->matinee_snap);
+                memcpy(pl->matinee_snap, data, snap_len);
+                pl->matinee_snap_len = snap_len;
             }
-            return;
-        }
-
-        // REQUEST_DOORS (0x2A) — respond with door snapshots, do not relay
-        if ((unsigned char)data[0] == 0x2A) {
-            for (int i = 0; i < MAX_DOOR_SNAPSHOTS; i++) {
-                DoorSnapshot *d = &s->doors[i];
-                if (!d->used || d->room_idx != pl->room_idx) continue;
-                // Skip lock packet — lock belongs to a specific player, irrelevant on rejoin
-                if (d->state_len > 0) server_send(s, &pl->addr, d->state_pkt, d->state_len);
-                if (d->angle_len > 0) server_send(s, &pl->addr, d->angle_pkt, d->angle_len);
+            if (ptype == WORLD_DISCONNECT) {
+                server_disconnect(s, pl);
+                return;
             }
-            return;
-        }
-
-        // REQUEST_PUSHABLES (0x2B) — respond with pushable snapshots, do not relay
-        if ((unsigned char)data[0] == 0x2B) {
-            for (int i = 0; i < MAX_PUSH_SNAPSHOTS; i++) {
-                PushSnapshot *ps = &s->pushables[i];
-                if (!ps->used || ps->room_idx != pl->room_idx) continue;
-                if (ps->pkt_len > 0) server_send(s, &pl->addr, ps->pkt, ps->pkt_len);
+            if (ptype == WORLD_REQUEST_ENEMIES) {
+                int i;
+                for (i = 0; i < MAX_ENEMY_SNAPSHOTS; i++) {
+                    EnemySnapshot *e = &s->enemies[i];
+                    if (!e->used || e->room_idx != pl->room_idx) continue;
+                    if (e->owner_player_id == pl->id) continue;
+                    if (e->spawn_len > 0) server_send(s, &pl->addr, e->spawn_pkt, e->spawn_len);
+                    if (e->smt_len > 0)   server_send(s, &pl->addr, e->smt_pkt,   e->smt_len);
+                    if (e->loc_len > 0)   server_send(s, &pl->addr, e->loc_pkt,   e->loc_len);
+                }
+                return;
             }
-            return;
+            if (ptype == WORLD_REQUEST_DOORS) {
+                int i;
+                for (i = 0; i < MAX_DOOR_SNAPSHOTS; i++) {
+                    DoorSnapshot *d = &s->doors[i];
+                    if (!d->used || d->room_idx != pl->room_idx) continue;
+                    if (d->state_len > 0) server_send(s, &pl->addr, d->state_pkt, d->state_len);
+                    if (d->angle_len > 0) server_send(s, &pl->addr, d->angle_pkt, d->angle_len);
+                }
+                return;
+            }
+            if (ptype == WORLD_REQUEST_PUSHABLES) {
+                int i;
+                for (i = 0; i < MAX_PUSH_SNAPSHOTS; i++) {
+                    PushSnapshot *ps = &s->pushables[i];
+                    if (!ps->used || ps->room_idx != pl->room_idx) continue;
+                    if (ps->pkt_len > 0) {
+                        char tmp[MAX_PUSH_SNAP_DATA];
+                        memcpy(tmp, ps->pkt, ps->pkt_len);
+                        if (ps->pkt_len > 26) tmp[26] = 0; /* clear bPushing */
+                        server_send(s, &pl->addr, tmp, ps->pkt_len);
+                    }
+                }
+                return;
+            }
         }
 
-        unsigned char ptype = (unsigned char)data[0];
-
-        // Binary door snapshots — payload after header: [X I32][Y I32][Z I32][...]
-        // Key = "X,Y,Z" string (matches text-path key format).
-        // DOOR_OPEN (0x13) and DOOR_CLOSE (0x14) update state_pkt and clear angle_pkt.
-        // DOOR_INIT (0x29) — initial registration on level load, first-write-wins.
-        if ((ptype == 0x10 || ptype == 0x11 || ptype == 0x12 ||
-             ptype == 0x13 || ptype == 0x14 || ptype == 0x15 || ptype == 0x29) && len >= 17) {
-            // data[5..8]=X, data[9..12]=Y, data[13..16]=Z (little-endian)
-            int dx = (int)((unsigned char)data[5]  | ((unsigned char)data[6]  << 8) |
-                           ((unsigned char)data[7]  << 16) | ((unsigned char)data[8]  << 24));
-            int dy = (int)((unsigned char)data[9]  | ((unsigned char)data[10] << 8) |
-                           ((unsigned char)data[11] << 16) | ((unsigned char)data[12] << 24));
-            int dz = (int)((unsigned char)data[13] | ((unsigned char)data[14] << 8) |
-                           ((unsigned char)data[15] << 16) | ((unsigned char)data[16] << 24));
+        // CH_DOOR: door snapshots — payload at data[6+]: [X I32][Y I32][Z I32][...]
+        if (channel == CH_DOOR && len >= 18) {
+            int dx = (int)((unsigned char)data[6]  | ((unsigned char)data[7]  << 8) |
+                           ((unsigned char)data[8]  << 16) | ((unsigned char)data[9]  << 24));
+            int dy = (int)((unsigned char)data[10] | ((unsigned char)data[11] << 8) |
+                           ((unsigned char)data[12] << 16) | ((unsigned char)data[13] << 24));
+            int dz = (int)((unsigned char)data[14] | ((unsigned char)data[15] << 8) |
+                           ((unsigned char)data[16] << 16) | ((unsigned char)data[17] << 24));
             char key[MAX_DOOR_KEY];
             snprintf(key, sizeof(key), "%d,%d,%d", dx, dy, dz);
 
-            if (ptype == 0x29) { // MPKT_DOOR_INIT — first-write-wins, server-only (do not relay)
-                // Only store if this door has no snapshot at all yet.
+            if (ptype == DOOR_INIT) {
                 if (!door_find(s, pl->room_idx, key)) {
                     DoorSnapshot *d = door_alloc(s, pl->room_idx, key);
                     if (d) {
                         int store = len < MAX_DOOR_SNAP_DATA ? len : MAX_DOOR_SNAP_DATA - 1;
                         memcpy(d->angle_pkt, data, store);
-                        // Store as DOOR_ANGLE (0x12) so clients handle it correctly on replay
-                        d->angle_pkt[0] = 0x12;
+                        d->angle_pkt[1] = DOOR_ANGLE; // rewrite type byte for replay
                         d->angle_len = store;
                     }
                 }
-                return; // never relay DOOR_INIT to other clients
-            } else if (ptype == 0x10) { // MPKT_DOOR_LOCK
+                return;
+            } else if (ptype == DOOR_LOCK) {
                 DoorSnapshot *d = door_find(s, pl->room_idx, key);
                 if (d && d->authority_player_id != 0 && d->authority_player_id != pl->id) {
                     send_door_deny(s, &pl->addr, key);
@@ -877,35 +929,33 @@ void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
                 }
                 d = door_alloc(s, pl->room_idx, key);
                 if (d) {
-                    d->authority_player_id = pl->id;
                     int store = len < MAX_DOOR_SNAP_DATA ? len : MAX_DOOR_SNAP_DATA - 1;
+                    d->authority_player_id = pl->id;
                     memcpy(d->lock_pkt, data, store);
                     d->lock_len = store;
                 }
-            } else if (ptype == 0x11) { // MPKT_DOOR_UNLOCK
+            } else if (ptype == DOOR_UNLOCK) {
                 DoorSnapshot *d = door_find(s, pl->room_idx, key);
                 if (d && d->authority_player_id == pl->id) {
                     d->authority_player_id = 0;
                     d->lock_len = 0;
                 }
-            } else if (ptype == 0x12) { // MPKT_DOOR_STATE
+            } else if (ptype == DOOR_STATE) {
                 DoorSnapshot *d = door_alloc(s, pl->room_idx, key);
                 if (d) {
                     int store = len < MAX_DOOR_SNAP_DATA ? len : MAX_DOOR_SNAP_DATA - 1;
                     memcpy(d->state_pkt, data, store);
                     d->state_len = store;
                 }
-            } else if (ptype == 0x13 || ptype == 0x14) { // MPKT_DOOR_OPEN / MPKT_DOOR_CLOSE
-                // These change the door's open/closed state — update state_pkt and
-                // clear the stale angle_pkt so newcomers don't get an old angle.
+            } else if (ptype == DOOR_OPEN || ptype == DOOR_CLOSE) {
                 DoorSnapshot *d = door_alloc(s, pl->room_idx, key);
                 if (d) {
                     int store = len < MAX_DOOR_SNAP_DATA ? len : MAX_DOOR_SNAP_DATA - 1;
                     memcpy(d->state_pkt, data, store);
                     d->state_len = store;
-                    d->angle_len = 0; // angle is now irrelevant
+                    d->angle_len = 0;
                 }
-            } else { // 0x15 MPKT_DOOR_ANGLE
+            } else if (ptype == DOOR_ANGLE) {
                 DoorSnapshot *d = door_alloc(s, pl->room_idx, key);
                 if (d) {
                     int store = len < MAX_DOOR_SNAP_DATA ? len : MAX_DOOR_SNAP_DATA - 1;
@@ -915,34 +965,60 @@ void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
             }
         }
 
-        // Binary pushable snapshot — MPKT_PUSH_STATE (0x1D).
-        // Payload: [type(1)][KeyX(4)][KeyY(4)][KeyZ(4)][DispX1000(4)] = 17 bytes after relay header.
-        // Key = "X,Y,Z" of initial spawn location. Overwrites previous entry (last-write wins).
-        if (ptype == 0x1D && len >= 17) {
-            int px = (int)((unsigned char)data[5]  | ((unsigned char)data[6]  << 8) |
-                           ((unsigned char)data[7]  << 16) | ((unsigned char)data[8]  << 24));
-            int py = (int)((unsigned char)data[9]  | ((unsigned char)data[10] << 8) |
-                           ((unsigned char)data[11] << 16) | ((unsigned char)data[12] << 24));
-            int pz = (int)((unsigned char)data[13] | ((unsigned char)data[14] << 8) |
-                           ((unsigned char)data[15] << 16) | ((unsigned char)data[16] << 24));
+        // CH_PUSH: pushable init snapshot — first-write-wins, never relayed.
+        // Sent by BroadcastPushableStates to register initial positions on server.
+        if (channel == CH_PUSH && ptype == PUSH_INIT && len >= 27) {
+            int px = (int)((unsigned char)data[6]  | ((unsigned char)data[7]  << 8) |
+                           ((unsigned char)data[8]  << 16) | ((unsigned char)data[9]  << 24));
+            int py = (int)((unsigned char)data[10] | ((unsigned char)data[11] << 8) |
+                           ((unsigned char)data[12] << 16) | ((unsigned char)data[13] << 24));
+            int pz = (int)((unsigned char)data[14] | ((unsigned char)data[15] << 8) |
+                           ((unsigned char)data[16] << 16) | ((unsigned char)data[17] << 24));
             char pkey[MAX_PUSH_KEY];
             snprintf(pkey, sizeof(pkey), "%d,%d,%d", px, py, pz);
-            PushSnapshot *ps = push_alloc(s, pl->room_idx, pkey);
-            if (ps) {
-                int store = len < MAX_PUSH_SNAP_DATA ? len : MAX_PUSH_SNAP_DATA - 1;
-                memcpy(ps->pkt, data, store);
-                ps->pkt_len = store;
+            if (!push_find(s, pl->room_idx, pkey)) {
+                PushSnapshot *ps = push_alloc(s, pl->room_idx, pkey);
+                if (ps) {
+                    int store = len < MAX_PUSH_SNAP_DATA ? len : MAX_PUSH_SNAP_DATA - 1;
+                    memcpy(ps->pkt, data, store);
+                    ps->pkt_len = store;
+                    /* rewrite as PUSH_STATE so clients handle it correctly on replay */
+                    ps->pkt[1] = PUSH_STATE;
+                }
+            }
+            return; /* never relay PUSH_INIT */
+        }
+
+        // CH_PUSH: pushable snapshot — payload at data[6+]: [KeyX(4)][KeyY(4)][KeyZ(4)][DispX1000(4)][Seq(4)][bPushing(1)]
+        // Embedded relay: last-write-wins, no ownership/deny logic (simplified).
+        if (channel == CH_PUSH && ptype == PUSH_STATE && len >= 27) {
+            int px = (int)((unsigned char)data[6]  | ((unsigned char)data[7]  << 8) |
+                           ((unsigned char)data[8]  << 16) | ((unsigned char)data[9]  << 24));
+            int py = (int)((unsigned char)data[10] | ((unsigned char)data[11] << 8) |
+                           ((unsigned char)data[12] << 16) | ((unsigned char)data[13] << 24));
+            int pz = (int)((unsigned char)data[14] | ((unsigned char)data[15] << 8) |
+                           ((unsigned char)data[16] << 16) | ((unsigned char)data[17] << 24));
+            char pkey[MAX_PUSH_KEY];
+            snprintf(pkey, sizeof(pkey), "%d,%d,%d", px, py, pz);
+            {
+                PushSnapshot *ps = push_alloc(s, pl->room_idx, pkey);
+                if (ps) {
+                    int store = len < MAX_PUSH_SNAP_DATA ? len : MAX_PUSH_SNAP_DATA - 1;
+                    memcpy(ps->pkt, data, store);
+                    ps->pkt_len = store;
+                }
             }
         }
 
-        // Binary PICKUP_KISMET (0x22) snapshot — payload: [len(1)][path bytes]
-        if (ptype == 0x22 && len >= 7) {
-            int plen = (int)(unsigned char)data[5];
-            int pbytes = len - 6;
+        // CH_WORLD: PICKUP_KISMET snapshot — payload at data[6+]: [strLen(1)][path bytes]
+        if (channel == CH_WORLD && ptype == WORLD_PICKUP_KISMET && len >= 8) {
+            int plen = (int)(unsigned char)data[6];
+            int pbytes = len - 7;
+            char key[MAX_PICKUP_KEY];
+            memset(key, 0, sizeof(key));
             if (plen > pbytes) plen = pbytes;
             if (plen > MAX_PICKUP_KEY - 1) plen = MAX_PICKUP_KEY - 1;
-            char key[MAX_PICKUP_KEY] = {0};
-            memcpy(key, data + 6, plen);
+            memcpy(key, data + 7, plen);
             if (key[0]) {
                 PickupSnapshot *p = pickup_alloc(s, pl->room_idx, key);
                 if (p) {
@@ -953,44 +1029,44 @@ void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
             }
         }
 
-        // Binary PICKUP_STATE (0x0C) snapshot — payload: [X I32][Y I32][Z I32] (13 bytes client + 5 header = 18).
-        // Key = "X,Y,Z". Last-write wins (pickup collected = permanently hidden).
-        if (ptype == 0x0C && len >= 18) {
-            int px = (int)((unsigned char)data[5]  | ((unsigned char)data[6]  << 8) |
-                           ((unsigned char)data[7]  << 16) | ((unsigned char)data[8]  << 24));
-            int py = (int)((unsigned char)data[9]  | ((unsigned char)data[10] << 8) |
-                           ((unsigned char)data[11] << 16) | ((unsigned char)data[12] << 24));
-            int pz = (int)((unsigned char)data[13] | ((unsigned char)data[14] << 8) |
-                           ((unsigned char)data[15] << 16) | ((unsigned char)data[16] << 24));
+        // CH_WORLD: PICKUP_STATE snapshot — payload at data[6+]: [X I32][Y I32][Z I32]
+        if (channel == CH_WORLD && ptype == WORLD_PICKUP_STATE && len >= 18) {
+            int px = (int)((unsigned char)data[6]  | ((unsigned char)data[7]  << 8) |
+                           ((unsigned char)data[8]  << 16) | ((unsigned char)data[9]  << 24));
+            int py = (int)((unsigned char)data[10] | ((unsigned char)data[11] << 8) |
+                           ((unsigned char)data[12] << 16) | ((unsigned char)data[13] << 24));
+            int pz = (int)((unsigned char)data[14] | ((unsigned char)data[15] << 8) |
+                           ((unsigned char)data[16] << 16) | ((unsigned char)data[17] << 24));
             char key[MAX_PICKUP_KEY];
             snprintf(key, sizeof(key), "%d,%d,%d", px, py, pz);
-            PickupSnapshot *p = pickup_alloc(s, pl->room_idx, key);
-            if (p) {
-                int store = len < MAX_PICKUP_SNAP_DATA ? len : MAX_PICKUP_SNAP_DATA - 1;
-                memcpy(p->pkt, data, store);
-                p->pkt_len = store;
+            {
+                PickupSnapshot *p = pickup_alloc(s, pl->room_idx, key);
+                if (p) {
+                    int store = len < MAX_PICKUP_SNAP_DATA ? len : MAX_PICKUP_SNAP_DATA - 1;
+                    memcpy(p->pkt, data, store);
+                    p->pkt_len = store;
+                }
             }
         }
 
-        // Binary enemy snapshots — store for REQUEST_ENEMIES / newcomer sync.
-        // Payload layout: [name_len(1)][name bytes][...]
-        if ((ptype == 0x09 || ptype == 0x18 || ptype == 0x19 || ptype == 0x1A) && len >= 7) {
-            // data[5] = name_len, data[6..] = name bytes
-            unsigned char nlen = (unsigned char)data[5];
-            int max_n = len - 6;
+        // CH_ENEMY: snapshots — payload at data[6+]: [name_len(1)][name bytes][...]
+        if (channel == CH_ENEMY && len >= 8) {
+            unsigned char nlen = (unsigned char)data[6];
+            int max_n = len - 7;
+            char ename[MAX_ENEMY_NAME];
+            memset(ename, 0, sizeof(ename));
             if (nlen > max_n) nlen = (unsigned char)max_n;
             if (nlen > MAX_ENEMY_NAME - 1) nlen = MAX_ENEMY_NAME - 1;
-            char ename[MAX_ENEMY_NAME] = {0};
-            memcpy(ename, data + 6, nlen);
+            memcpy(ename, data + 7, nlen);
 
-            if (ptype == 0x09) { // MPKT_ENPC_LOC — update position snapshot
+            if (ptype == ENEMY_LOC) {
                 EnemySnapshot *e = enemy_find(s, pl->room_idx, ename);
                 if (e) {
                     int store = len < MAX_ENEMY_SNAP_DATA ? len : MAX_ENEMY_SNAP_DATA - 1;
                     memcpy(e->loc_pkt, data, store);
                     e->loc_len = store;
                 }
-            } else if (ptype == 0x18) { // MPKT_ENPC_SPAWN
+            } else if (ptype == ENEMY_SPAWN) {
                 EnemySnapshot *e = enemy_alloc(s, pl->room_idx, ename, pl->id);
                 if (e) {
                     int store = len < MAX_ENEMY_SNAP_DATA ? len : MAX_ENEMY_SNAP_DATA - 1;
@@ -999,18 +1075,15 @@ void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
                     e->smt_len = 0;
                     e->loc_len = 0;
                 }
-            } else if (ptype == 0x19) { // MPKT_ENPC_DEL
+            } else if (ptype == ENEMY_DEL) {
                 enemy_remove(s, pl->room_idx, ename);
-            } else { // 0x1A MPKT_ENPC_SMT
-                // SMTType byte follows name: data[6 + nlen]
-                int smt_off = 6 + nlen;
+            } else if (ptype == ENEMY_SMT) {
+                int smt_off = 7 + nlen;
                 unsigned char smt_type = (smt_off < len) ? (unsigned char)data[smt_off] : 0;
-                // Skip grab/kill SMTs (77-93) — one-shot animations, must not replay on respawn
                 int is_transient = (smt_type >= 77 && smt_type <= 93);
                 EnemySnapshot *e = enemy_find(s, pl->room_idx, ename);
                 if (e) {
                     if (is_transient) {
-                        // Clear any previously stored SMT so respawning players don't replay it
                         e->smt_len = 0;
                     } else {
                         int store = len < MAX_ENEMY_SNAP_DATA ? len : MAX_ENEMY_SNAP_DATA - 1;
@@ -1021,93 +1094,81 @@ void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
             }
         }
 
-        // Push GUI packet event for Graph tab visualisation + History
-        {
-            int sender_slot = (int)(pl - s->players);
-            const char *room = s->rooms[pl->room_idx].code;
+        // GUI events + history
+        sender_slot = (int)(pl - s->players);
+        room = s->rooms[pl->room_idx].code;
+        if (channel == CH_HERO) {
             switch (ptype) {
-                case 0x01: gui_push_event(s, sender_slot, GUIPKT_LOC);      break;
-                case 0x07: gui_push_event(s, sender_slot, GUIPKT_SMT);
-                {
-                    // SMT payload: data[5] = smt_type
-                    int smt_type = (len > 5) ? (unsigned char)data[5] : -1;
+                case HERO_STATE: gui_push_event(s, sender_slot, GUIPKT_LOC); break;
+                case HERO_SMT_TYPE: {
+                    int smt_type = (len > 6) ? (unsigned char)data[6] : -1;
+                    gui_push_event(s, sender_slot, GUIPKT_SMT);
                     history_push(s, "[%s@%s] SMT %d", pl->nick, room, smt_type);
                     break;
                 }
-                case 0x0B: gui_push_event(s, sender_slot, GUIPKT_RESPAWN);
-                    history_push(s, "[%s@%s] Respawn/Death (0x%02x)", pl->nick, room, ptype);
-                    break;
-                case 0x10: case 0x11: case 0x12:
-                case 0x13: case 0x14: case 0x15:
-                case 0x29: // MPKT_DOOR_INIT (initial registration, first-write-wins)
-                    gui_push_event(s, sender_slot, GUIPKT_DOOR);
-                    history_push(s, "[%s@%s] Door 0x%02x", pl->nick, room, ptype);
-                    break;
-                case 0x18: // ENPC_SPAWN
-                {
-                    char ename2[MAX_ENEMY_NAME] = {0};
-                    if (len >= 7) {
-                        unsigned char nl2 = (unsigned char)data[5];
-                        int mn2 = len - 6; if (nl2 > mn2) nl2 = (unsigned char)mn2;
-                        if (nl2 > MAX_ENEMY_NAME - 1) nl2 = MAX_ENEMY_NAME - 1;
-                        memcpy(ename2, data + 6, nl2);
-                    }
-                    history_push(s, "[%s@%s] EnemySpawn %s", pl->nick, room, ename2);
-                    break;
-                }
-                case 0x19: // ENPC_DEL
-                {
-                    char ename2[MAX_ENEMY_NAME] = {0};
-                    if (len >= 7) {
-                        unsigned char nl2 = (unsigned char)data[5];
-                        int mn2 = len - 6; if (nl2 > mn2) nl2 = (unsigned char)mn2;
-                        if (nl2 > MAX_ENEMY_NAME - 1) nl2 = MAX_ENEMY_NAME - 1;
-                        memcpy(ename2, data + 6, nl2);
-                    }
-                    history_push(s, "[%s@%s] EnemyDel %s", pl->nick, room, ename2);
-                    break;
-                }
-                case 0x1A: gui_push_event(s, sender_slot, GUIPKT_ENPC_SMT);
-                {
-                    char ename2[MAX_ENEMY_NAME] = {0};
-                    int smt_type2 = -1;
-                    if (len >= 7) {
-                        unsigned char nl2 = (unsigned char)data[5];
-                        int mn2 = len - 6; if (nl2 > mn2) nl2 = (unsigned char)mn2;
-                        if (nl2 > MAX_ENEMY_NAME - 1) nl2 = MAX_ENEMY_NAME - 1;
-                        memcpy(ename2, data + 6, nl2);
-                        int smt_off2 = 6 + nl2;
-                        if (smt_off2 < len) smt_type2 = (unsigned char)data[smt_off2];
-                    }
-                    history_push(s, "[%s@%s] EnemySMT %s #%d", pl->nick, room, ename2, smt_type2);
-                    break;
-                }
-                case 0x1F: // TRIGGER_ACT: [count LE4][str_len(1)][path...]
-                {
-                    char path[128] = {0};
-                    if (len >= 11) {
-                        unsigned char slen = (unsigned char)data[9];
-                        int ml = len - 10; if (slen > ml) slen = (unsigned char)ml;
-                        if (slen > 127) slen = 127;
-                        memcpy(path, data + 10, slen);
-                    }
-                    history_push(s, "[%s@%s] Trigger %s", pl->nick, room, path);
-                    break;
-                }
-                case 0x20: // CSA: [str_len(1)][path...]
-                {
-                    char path[128] = {0};
-                    if (len >= 7) {
-                        unsigned char slen = (unsigned char)data[5];
-                        int ml = len - 6; if (slen > ml) slen = (unsigned char)ml;
-                        if (slen > 127) slen = 127;
-                        memcpy(path, data + 6, slen);
-                    }
-                    history_push(s, "[%s@%s] CSA %s", pl->nick, room, path);
+                case HERO_PLAYER_LIFECYCLE: {
+                    gui_push_event(s, sender_slot, GUIPKT_RESPAWN);
+                    history_push(s, "[%s@%s] Lifecycle", pl->nick, room);
                     break;
                 }
                 default: break;
             }
+        } else if (channel == CH_DOOR) {
+            gui_push_event(s, sender_slot, GUIPKT_DOOR);
+            history_push(s, "[%s@%s] Door 0x%02x", pl->nick, room, ptype);
+        } else if (channel == CH_ENEMY) {
+            switch (ptype) {
+                case ENEMY_SPAWN: {
+                    char ename2[MAX_ENEMY_NAME];
+                    memset(ename2, 0, sizeof(ename2));
+                    if (len >= 8) {
+                        unsigned char nl2 = (unsigned char)data[6];
+                        int mn2 = len - 7; if (nl2 > mn2) nl2 = (unsigned char)mn2;
+                        if (nl2 > MAX_ENEMY_NAME - 1) nl2 = MAX_ENEMY_NAME - 1;
+                        memcpy(ename2, data + 7, nl2);
+                    }
+                    history_push(s, "[%s@%s] EnemySpawn %s", pl->nick, room, ename2);
+                    break;
+                }
+                case ENEMY_DEL: {
+                    char ename2[MAX_ENEMY_NAME];
+                    memset(ename2, 0, sizeof(ename2));
+                    if (len >= 8) {
+                        unsigned char nl2 = (unsigned char)data[6];
+                        int mn2 = len - 7; if (nl2 > mn2) nl2 = (unsigned char)mn2;
+                        if (nl2 > MAX_ENEMY_NAME - 1) nl2 = MAX_ENEMY_NAME - 1;
+                        memcpy(ename2, data + 7, nl2);
+                    }
+                    history_push(s, "[%s@%s] EnemyDel %s", pl->nick, room, ename2);
+                    break;
+                }
+                case ENEMY_SMT: {
+                    char ename2[MAX_ENEMY_NAME];
+                    int smt_type2 = -1;
+                    memset(ename2, 0, sizeof(ename2));
+                    gui_push_event(s, sender_slot, GUIPKT_ENPC_SMT);
+                    if (len >= 8) {
+                        unsigned char nl2 = (unsigned char)data[6];
+                        int mn2 = len - 7; if (nl2 > mn2) nl2 = (unsigned char)mn2;
+                        if (nl2 > MAX_ENEMY_NAME - 1) nl2 = MAX_ENEMY_NAME - 1;
+                        memcpy(ename2, data + 7, nl2);
+                        { int smt_off2 = 7 + nl2; if (smt_off2 < len) smt_type2 = (unsigned char)data[smt_off2]; }
+                    }
+                    history_push(s, "[%s@%s] EnemySMT %s #%d", pl->nick, room, ename2, smt_type2);
+                    break;
+                }
+                default: break;
+            }
+        } else if (channel == CH_WORLD && ptype == WORLD_TRIGGER_ACT) {
+            char path[128];
+            memset(path, 0, sizeof(path));
+            if (len >= 12) {
+                unsigned char slen = (unsigned char)data[10];
+                int ml = len - 11; if (slen > ml) slen = (unsigned char)ml;
+                if (slen > 127) slen = 127;
+                memcpy(path, data + 11, slen);
+            }
+            history_push(s, "[%s@%s] Trigger %s", pl->nick, room, path);
         }
 
         // Relay as-is — receivers parse the binary payload themselves

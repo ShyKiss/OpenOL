@@ -53,11 +53,14 @@ void OLImGui_TabRelay()
     {
         ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "Status: stopped");
         ImGui::SetNextItemWidth(80.0f);
-        ImGui::InputText(OLLocale_T("relay.port"),    SRelayPort,   sizeof(SRelayPort));
+        ImGui::InputText(OLLocale_T("relay.port"),    SRelayPort,   sizeof(SRelayPort),
+            ImGuiInputTextFlags_CallbackCharFilter, OLImGui_ToggleKeyCharFilter);
         ImGui::SetNextItemWidth(200.0f);
-        ImGui::InputText(OLLocale_T("relay.name"),    SRelayName,   sizeof(SRelayName));
+        ImGui::InputText(OLLocale_T("relay.name"),    SRelayName,   sizeof(SRelayName),
+            ImGuiInputTextFlags_CallbackCharFilter, OLImGui_ToggleKeyCharFilter);
         ImGui::SetNextItemWidth(300.0f);
-        ImGui::InputText(OLLocale_T("relay.db_path"), SRelayDbPath, sizeof(SRelayDbPath));
+        ImGui::InputText(OLLocale_T("relay.db_path"), SRelayDbPath, sizeof(SRelayDbPath),
+            ImGuiInputTextFlags_CallbackCharFilter, OLImGui_ToggleKeyCharFilter);
         if (ImGui::Button(OLLocale_T("relay.start")))
         {
             int Port = 0;

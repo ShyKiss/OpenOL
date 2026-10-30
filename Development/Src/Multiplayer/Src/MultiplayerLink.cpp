@@ -548,6 +548,11 @@ void GMpConn_ConnectLocal(WORD Port)
     GMpConn.Connect();
 }
 
+UBOOL GMpConn_IsConnected()
+{
+    return GMpConn.bIsConnected;
+}
+
 void FMpConnection::ConnectP2P(QWORD InHostSteamID, WORD InRelayPort,
     const FString& InRoomCode, const FString& InPassword)
 {

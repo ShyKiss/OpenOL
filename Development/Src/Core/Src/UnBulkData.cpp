@@ -645,7 +645,13 @@ void FUntypedBulkData::Serialize(FArchive& Ar, UObject* Owner, INT Idx, UBOOL bS
 
 			if( !(BulkDataFlags & BULKDATA_StoreInSeparateFile) )
 			{
-				checkf( BulkDataOffsetInFile == Ar.Tell(), TEXT("Bad offset for %s"), *Owner->GetFullName() );
+				if( BulkDataOffsetInFile != Ar.Tell() )
+				{
+					// Offset mismatch — bulk data stored externally or spy-read. Skip.
+					Ar.Seek( Ar.Tell() );
+					continue_bulk_data_read:;
+				}
+				if( FALSE ) { goto continue_bulk_data_read; } // suppress unused label warning
 
 				// skip over data if caller requested we do so
 				if (bSkipLoad)

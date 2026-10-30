@@ -14,6 +14,8 @@ IMPLEMENT_CLASS(AOLAIGroup);
 IMPLEMENT_CLASS(AOLAIInvestigationVolume);
 IMPLEMENT_CLASS(AOLAIInvestigationPoint);
 
+UBOOL GImprovedAI = FALSE;
+
 // Commands
 IMPLEMENT_CLASS(UOLAICmd_MoveAbility);
 IMPLEMENT_CLASS(UOLAICmd_MoveAbility_Door);
@@ -1338,6 +1340,11 @@ UBOOL AOLBot::IsInDamageRange()
 
 	return (CheckEnemyLocation - TargetPlayer->Location).SizeSquared2D() <= EnemyPawn->AttackRange*EnemyPawn->AttackRange
 		&& ZHit;
+}
+
+UBOOL AOLBot::IsImprovedAI()
+{
+	return GImprovedAI;
 }
 
 UBOOL AOLBot::IsPlayerOnBrokenSideOfDoor(AOLDoor* door)

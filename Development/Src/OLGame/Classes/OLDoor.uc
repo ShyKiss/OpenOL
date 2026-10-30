@@ -488,6 +488,11 @@ native function NotifyHandlesToWait();
 
 native function SoftDestroy(); // Similar to what a Destroy would do, but the actor needs to stay alive for navmesh pathing
 
+// Forces DoorMeshType to be re-derived from the currently assigned mesh material and
+// refreshes the meshes/collision that depend on it.  Used by editor tooling after a
+// door's mesh data is changed at runtime (e.g. the Spawns editor tab).
+native function ForceInit();
+
 simulated function OnDestroy(SeqAct_Destroy Action)
 {
 	SoftDestroy();

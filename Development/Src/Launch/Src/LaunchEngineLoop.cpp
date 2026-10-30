@@ -170,6 +170,7 @@ extern void AutoInitializeRegistrantsExampleEditor( INT& Lookup );
 extern void AutoInitializeRegistrantsUDKBase( INT& Lookup );
 extern void AutoInitializeRegistrantsOLGame( INT& Lookup );
 extern void AutoInitializeRegistrantsMultiplayer( INT& Lookup );
+extern void AutoInitializeRegistrantsTASGame( INT& Lookup );
 extern void AutoInitializeRegistrantsOLEditor( INT& Lookup );
 
 #elif GAMENAME == EXOGAME
@@ -4546,6 +4547,7 @@ void InitializeRegistrantsAndRegisterNames()
 	AutoInitializeRegistrantsUDKBase( Lookup );
 	AutoInitializeRegistrantsOLGame( Lookup );
 	AutoInitializeRegistrantsMultiplayer( Lookup );
+	AutoInitializeRegistrantsTASGame( Lookup );
 #if _WINDOWS && WITH_EDITOR
 	AutoInitializeRegistrantsOLEditor( Lookup );
 #endif

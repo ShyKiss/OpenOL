@@ -1,2 +1,33 @@
+# Default-deny: the root is a full game install plus the UE3 source tree, which
+# must never be published wholesale. Only files that differ from the original
+# engine are tracked. Tracked files are unaffected by these rules.
+# Use Development/Src/Targets/git_track.py to find and add changed engine files.
+/*
+!/.gitignore
+!/.gitattributes
+!/.github/
+!/CI/
+!/docs/
+!/README.md
+!/README_RU.md
+
+# Own code: new files here show up in `git status` without any extra step.
+!/Development/
+/Development/*
+!/Development/Src/
+/Development/Src/*
+!/Development/Src/Multiplayer/
+/Development/Src/Multiplayer/*
+!/Development/Src/Multiplayer/Classes/
+!/Development/Src/Multiplayer/Inc/
+!/Development/Src/Multiplayer/Src/
+!/Development/Src/Multiplayer/Tests/
+!/Development/Src/Multiplayer/*.md
+
 *.exe
 *.u
+__pycache__/
+
+# clangd-only helper symlinks (case-alias headers + Wine SDK shim), not real project files
+.clangd-msvc-shim/
+compile_commands.json

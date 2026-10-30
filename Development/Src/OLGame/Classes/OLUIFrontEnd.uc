@@ -533,11 +533,34 @@ function SetClipboardText(string Text)
 function Press_OptionItemButton(int PSID)
 {
     local OLUIFrontEnd_Multiplayer MultiScreen;
-    if (ViewStack.Length > 0)
+    local OLUIFrontEnd_Options OptionsScreen;
+    local OLUIFrontEnd_Options_Console OptionsConsoleScreen;
+    local Object TopView;
+
+    if (ViewStack.Length == 0)
+        return;
+
+    TopView = ViewStack[ViewStack.Length - 1];
+
+    MultiScreen = OLUIFrontEnd_Multiplayer(TopView);
+    if (MultiScreen != None)
     {
-        MultiScreen = OLUIFrontEnd_Multiplayer(ViewStack[ViewStack.Length - 1]);
-        if (MultiScreen != None)
-            MultiScreen.Press_OptionItemButton(PSID);
+        MultiScreen.Press_OptionItemButton(PSID);
+        return;
+    }
+
+    OptionsScreen = OLUIFrontEnd_Options(TopView);
+    if (OptionsScreen != None)
+    {
+        OptionsScreen.Press_OptionItemButton(PSID);
+        return;
+    }
+
+    OptionsConsoleScreen = OLUIFrontEnd_Options_Console(TopView);
+    if (OptionsConsoleScreen != None)
+    {
+        OptionsConsoleScreen.Press_OptionItemButton(PSID);
+        return;
     }
 }
 

@@ -22,6 +22,7 @@ declare -a MAPPINGS=(
 
     # UnrealScript packages — mod-specific go to OpenOL/, engine packages as .upk
     "OLGame/Script/Multiplayer.u|OLGame/CookedPCConsole/OpenOL/Multiplayer.u"
+    "OLGame/Script/TASGame.u|OLGame/CookedPCConsole/OpenOL/TASGame.u"
     "OLGame/Script/OLGame.u|OLGame/CookedPCConsole/OpenOL/OLGame.u"
     "OLGame/Script/Core.u|OLGame/CookedPCConsole/OpenOL/Core.u"
     "OLGame/Script/Engine.u|OLGame/CookedPCConsole/OpenOL/Engine.u"
@@ -40,12 +41,27 @@ declare -a MAPPINGS=(
     # Localization
     "OLGame/Localization/INT/OLGame.int|OLGame/Localization/INT/OLGame.int"
     "OLGame/Localization/RUS/olgame.RUS|OLGame/Localization/RUS/olgame.RUS"
+    "OLGame/Localization/DEU/olgame.DEU|OLGame/Localization/DEU/olgame.DEU"
+    "OLGame/Localization/ESN/olgame.ESN|OLGame/Localization/ESN/olgame.ESN"
+    "OLGame/Localization/FRA/olgame.FRA|OLGame/Localization/FRA/olgame.FRA"
+    "OLGame/Localization/ITA/olgame.ITA|OLGame/Localization/ITA/olgame.ITA"
+    "OLGame/Localization/JPN/OLGame.JPN|OLGame/Localization/JPN/OLGame.JPN"
+    "OLGame/Localization/POL/olgame.POL|OLGame/Localization/POL/olgame.POL"
+    "OLGame/Localization/PTB/OLGame.ptb|OLGame/Localization/PTB/OLGame.ptb"
 
     # Config
     "OLGame/Config/DefaultUI.ini|OLGame/Config/DefaultUI.ini"
     "OLGame/Config/DefaultEngine.ini|OLGame/Config/DefaultEngine.ini"
     "OLGame/Config/DefaultMultiplayer.ini|OLGame/Config/DefaultMultiplayer.ini"
     "OLGame/Config/DefaultGame.ini|OLGame/Config/DefaultGame.ini"
+    "OLGame/Config/DefaultInput.ini|OLGame/Config/DefaultInput.ini"
+
+    # ImGui Config
+    "Binaries/Win64/OpenOL/locales/en.ini|Binaries/Win64/OpenOL/locales/en.ini"
+    "Binaries/Win64/OpenOL/locales/ru.ini|Binaries/Win64/OpenOL/locales/ru.ini"
+
+    # Checkpoint thumbnails (DDS)
+    "Binaries/Win64/OpenOL/res/checkpoints/|Binaries/Win64/OpenOL/res/checkpoints/"
 )
 
 echo "Publishing to $DEST ..."
@@ -57,6 +73,22 @@ for entry in "${MAPPINGS[@]}"; do
     dst_rel="${entry##*|}"
     src="$OL1/$src_rel"
     dst="$DEST/$dst_rel"
+
+    # Directory entry: trailing slash on both sides
+    if [[ "$src_rel" == */ ]]; then
+        if [ ! -d "$src" ]; then
+            echo "  MISSING DIR: $src_rel"
+            continue
+        fi
+        mkdir -p "$dst"
+        cp -r "$src/." "$dst/"
+        while IFS= read -r -d '' f; do
+            rel="${f#$DEST/}"
+            DEST_FILES+=("$rel")
+        done < <(find "$dst" -type f -print0)
+        echo "  $src_rel  →  $dst_rel  (dir)"
+        continue
+    fi
 
     if [ ! -f "$src" ]; then
         echo "  MISSING: $src_rel"
@@ -73,7 +105,7 @@ echo ""
 echo "Creating archive $ARCHIVE ..."
 rm -f "$ARCHIVE"
 cd "$DEST"
-7z a -mx=9 -mmt=on "$ARCHIVE" "${DEST_FILES[@]}"
+7z a -mx=9 -md=128m -mmt=on "$ARCHIVE" "${DEST_FILES[@]}"
 
 echo ""
 echo "Done: $ARCHIVE"

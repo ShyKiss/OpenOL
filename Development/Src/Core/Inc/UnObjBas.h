@@ -1880,6 +1880,7 @@ public:
 	static void DissociateImportsAndForcedExports();
 	static void BeginLoad();
 	static void EndLoad( const TCHAR* LoadContext = NULL );
+	static UBOOL IsInLoad() { return GObjBeginLoadCount > 0; }
 
 	/**
 	 * Wrapper for InitProperties which calls ExitProperties first if this object has already had InitProperties called on it at least once.

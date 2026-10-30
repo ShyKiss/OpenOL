@@ -31,6 +31,7 @@
 
 // MP HUD snapshot filler (needs Multiplayer types, isolated in MultiplayerHUD.cpp).
 #include "..\..\Multiplayer\Inc\MultiplayerHUD.h"
+#include "OLImGui_LoadingOverlay.h"
 
 // ---------------------------------------------------------------------------
 // Shared globals — defined here, declared extern in ImGuiShared.h
@@ -133,6 +134,9 @@ void OLImGui_BuildUI()
 {
     // MP HUD overlay — always drawn regardless of debug window state.
     MpHud_DrawOverlay();
+
+    // Loading progress overlay — always drawn regardless of debug window state.
+    OLLoadingOverlay_Draw();
 
     // Placement mode overlay — ellipse on floor under ghost.
     OLSpawns_DrawPlacementOverlay();
@@ -332,6 +336,52 @@ public:
                 ((FLinearColor*)Base)->B = W.NewValue.Col[2];
                 ((FLinearColor*)Base)->A = W.NewValue.Col[3];
                 break;
+            // Array element writes: Base points to TArray<T>; ArrayIdx selects element.
+            case PWT_ArrayBool:
+            {
+                FScriptArray& Arr = *(FScriptArray*)Base;
+                if (W.ArrayIdx >= 0 && W.ArrayIdx < Arr.Num()) {
+                    BITFIELD* Elem = (BITFIELD*)((BYTE*)Arr.GetData() + W.ArrayIdx * sizeof(BITFIELD));
+                    if (W.NewValue.Bool) *Elem |=  W.BitMask;
+                    else                 *Elem &= ~W.BitMask;
+                }
+                break;
+            }
+            case PWT_ArrayInt:
+            {
+                FScriptArray& Arr = *(FScriptArray*)Base;
+                if (W.ArrayIdx >= 0 && W.ArrayIdx < Arr.Num())
+                    ((INT*)Arr.GetData())[W.ArrayIdx] = W.NewValue.Int;
+                break;
+            }
+            case PWT_ArrayFloat:
+            {
+                FScriptArray& Arr = *(FScriptArray*)Base;
+                if (W.ArrayIdx >= 0 && W.ArrayIdx < Arr.Num())
+                    ((FLOAT*)Arr.GetData())[W.ArrayIdx] = W.NewValue.Float;
+                break;
+            }
+            case PWT_ArrayByte:
+            {
+                FScriptArray& Arr = *(FScriptArray*)Base;
+                if (W.ArrayIdx >= 0 && W.ArrayIdx < Arr.Num())
+                    ((BYTE*)Arr.GetData())[W.ArrayIdx] = W.NewValue.Byte;
+                break;
+            }
+            case PWT_ArrayStr:
+            {
+                FScriptArray& Arr = *(FScriptArray*)Base;
+                if (W.ArrayIdx >= 0 && W.ArrayIdx < Arr.Num())
+                    ((FString*)Arr.GetData())[W.ArrayIdx] = FString(ANSI_TO_TCHAR(W.StrValue));
+                break;
+            }
+            case PWT_ArrayName:
+            {
+                FScriptArray& Arr = *(FScriptArray*)Base;
+                if (W.ArrayIdx >= 0 && W.ArrayIdx < Arr.Num())
+                    ((FName*)Arr.GetData())[W.ArrayIdx] = FName(ANSI_TO_TCHAR(W.StrValue));
+                break;
+            }
             }
         }
 
@@ -341,11 +391,21 @@ public:
         // 3. Refresh MP HUD snapshot (always, not gated on overlay visibility).
         MpHud_UpdateSnapshot();
 
+        // 3z. Refresh loading progress snapshot (always, not gated on overlay visibility).
+        OLLoadingOverlay_UpdateSnapshot();
+
         // 3a. Checkpoint snapshot — always ticked so the tab visibility flag stays current.
         OLImGui_Checkpoints_Tick();
 
         // 3b. Placement confirm — must run every tick even when menu is closed.
         OLSpawns_TickPlacement();
+        OLSpawns_TickLightPlacement();
+        OLSpawns_TickLightConfirm();
+        OLSpawns_TickLightList();
+        OLSpawns_TickDoors();
+        OLSpawns_ScanProps();
+        OLSpawns_TickFog();
+        OLSpawns_DispatchConfirm();
 
         // 3c. Console scrollback snapshot.
         OLImGui_Console_Tick();
@@ -353,7 +413,11 @@ public:
         if (!GImGuiShowDemoWindow)
             return;
 
-        // 4. Re-render asset previews (main + hover instances) — only while menu is open.
+        // 4. Drive async object loads (IO already done in IO thread, UObject work here).
+        Utils::TickAsyncObjectLoader();
+
+        // 4. Re-render asset previews — only while menu is open.
+        OLSpawns_TickProps();
         OLSpawns_TickPreviews();
 
         // 4a. Refresh player state snapshot for render thread.
@@ -384,6 +448,7 @@ public:
                     FPropSnap PS;
                     TCHARToCharBuf(PS.Name, SNAP_NAME_LEN, *Prop->GetName());
                     PS.Offset      = Prop->Offset;
+                    PS.ArrayIdx    = -1;
                     PS.BitMask     = 0;
                     PS.StrValue[0] = '\0';
                     PS.TexPtr      = NULL;
@@ -434,7 +499,7 @@ public:
                             TCHARToCharBuf(PS.StrValue, SNAP_STR_LEN, *Val->GetName());
                         } else {
                             PS.Type   = PST_Object;
-                            PS.TexPtr = NULL;
+                            PS.TexPtr = Val; // may be NULL; used for navigation on render thread
                             TCHARToCharBuf(PS.StrValue, SNAP_STR_LEN, Val ? *Val->GetName() : TEXT("None"));
                         }
                         Group.Props.AddItem(PS); continue;
@@ -474,6 +539,101 @@ public:
                             }
                         }
                     }
+                    if (UArrayProperty* AP = Cast<UArrayProperty>(Prop)) {
+                        UProperty* Inner = AP->Inner;
+                        if (!Inner) continue;
+                        FScriptArray& Arr = *(FScriptArray*)((BYTE*)Requested + AP->Offset);
+                        const INT Count = Arr.Num();
+                        if (Count < 0 || Count > 512) continue; // sanity guard
+
+                        // Header sentinel: stores element count in Value.Int.
+                        PS.Type      = PST_ArrayHeader;
+                        PS.Value.Int = Count;
+                        Group.Props.AddItem(PS);
+
+                        // One FPropSnap per element.
+                        BYTE* Data = (BYTE*)Arr.GetData();
+
+                        for (INT ei = 0; ei < Count; ++ei)
+                        {
+                            FPropSnap EPS;
+                            _snprintf(EPS.Name, SNAP_NAME_LEN, "[%d]", ei);
+                            EPS.Offset      = AP->Offset; // TArray offset in object
+                            EPS.ArrayIdx    = ei;
+                            EPS.BitMask     = 0;
+                            EPS.StrValue[0] = '\0';
+                            EPS.TexPtr      = NULL;
+
+                            BYTE* ElemPtr = Data + ei * Inner->ElementSize;
+
+                            if (Cast<UBoolProperty>(Inner)) {
+                                UBoolProperty* BP = Cast<UBoolProperty>(Inner);
+                                EPS.Type      = PST_Bool;
+                                EPS.BitMask   = BP->BitMask;
+                                EPS.Value.Bool = !!(*(BITFIELD*)ElemPtr & BP->BitMask);
+                                Group.Props.AddItem(EPS); continue;
+                            }
+                            if (Cast<UIntProperty>(Inner)) {
+                                EPS.Type      = PST_Int;
+                                EPS.Value.Int = *(INT*)ElemPtr;
+                                Group.Props.AddItem(EPS); continue;
+                            }
+                            if (Cast<UFloatProperty>(Inner)) {
+                                EPS.Type        = PST_Float;
+                                EPS.Value.Float = *(FLOAT*)ElemPtr;
+                                Group.Props.AddItem(EPS); continue;
+                            }
+                            if (UByteProperty* YP = Cast<UByteProperty>(Inner)) {
+                                EPS.Type       = PST_Byte;
+                                EPS.Value.Byte = *(BYTE*)ElemPtr;
+                                if (YP->Enum) {
+                                    int NV = YP->Enum->NumEnums();
+                                    for (int eei = 0; eei < NV; ++eei)
+                                        EPS.EnumValues.AddItem(YP->Enum->GetEnum(eei).ToString());
+                                }
+                                Group.Props.AddItem(EPS); continue;
+                            }
+                            if (Cast<UNameProperty>(Inner)) {
+                                EPS.Type = PST_Name;
+                                TCHARToCharBuf(EPS.StrValue, SNAP_STR_LEN,
+                                    *(*(FName*)ElemPtr).ToString());
+                                Group.Props.AddItem(EPS); continue;
+                            }
+                            if (Cast<UStrProperty>(Inner)) {
+                                EPS.Type = PST_Str;
+                                TCHARToCharBuf(EPS.StrValue, SNAP_STR_LEN,
+                                    *(*(FString*)ElemPtr));
+                                Group.Props.AddItem(EPS); continue;
+                            }
+                            if (UObjectProperty* OP = Cast<UObjectProperty>(Inner)) {
+                                UObject* Val = *(UObject**)ElemPtr;
+                                EPS.Type   = PST_Object;
+                                EPS.TexPtr = Val;
+                                TCHARToCharBuf(EPS.StrValue, SNAP_STR_LEN,
+                                    Val ? *Val->GetName() : TEXT("None"));
+                                Group.Props.AddItem(EPS); continue;
+                            }
+                            if (UStructProperty* STP2 = Cast<UStructProperty>(Inner)) {
+                                if (STP2->Struct) {
+                                    FName SN = STP2->Struct->GetFName();
+                                    if (SN == NAME_Vector) {
+                                        FVector& V = *(FVector*)ElemPtr;
+                                        EPS.Type = PST_Vector;
+                                        EPS.Value.Vec[0]=V.X; EPS.Value.Vec[1]=V.Y; EPS.Value.Vec[2]=V.Z;
+                                        Group.Props.AddItem(EPS); continue;
+                                    }
+                                    if (SN == NAME_Rotator) {
+                                        FRotator& R = *(FRotator*)ElemPtr;
+                                        EPS.Type = PST_Rotator;
+                                        EPS.Value.Rot[0]=R.Pitch; EPS.Value.Rot[1]=R.Yaw; EPS.Value.Rot[2]=R.Roll;
+                                        Group.Props.AddItem(EPS); continue;
+                                    }
+                                }
+                            }
+                            // Unknown inner type — skip element but keep header visible.
+                        }
+                        continue;
+                    }
                 }
 
                 if (Group.Props.Num() > 0)
@@ -501,8 +661,8 @@ void OLImGui_InvalidateCaches()
     // Spawns tab: GPreviewMeshCache / GWeaponMeshCache + enemy list snap.
     OLSpawns_InvalidateMeshCache();
 
-    // Scene tab: GDetailRequest / GDetailFront/Back — these hold arbitrary
-    // actor pointers. Clear the request so a stale actor isn't re-inspected.
+    // Scene tab: clear selected object, nav stack, and detail request.
+    OLImGui_Scene_Invalidate();
     GDetailRequest = NULL;
     // Leave GDetailFront/Back intact — render thread reads Front;
     // game thread will overwrite Back on next request.  Safe.

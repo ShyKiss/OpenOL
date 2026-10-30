@@ -37,17 +37,151 @@ static void AppendA(char* Dst, int Len, const char* Src)
 }
 
 // ---------------------------------------------------------------------------
+// FOLImageAsyncLoadThread — one shared background worker per FOLImageLoader
+// instance. Processes a small FIFO queue of (name, path) requests: reads the
+// file and runs stb_image decode entirely off the game thread. Decoded RGBA8
+// buffers are picked up and uploaded to D3D9 by FOLImageLoader::PollReady()
+// on the game thread, since D3D9 device calls aren't safe from a worker thread.
+// ---------------------------------------------------------------------------
+
+class FOLImageAsyncLoadThread : public FRunnable
+{
+public:
+    struct FResult
+    {
+        char           Name[128];
+        unsigned char* Pixels; // RGBA8, owned by whoever pops it; NULL = load failed
+        int            Width;
+        int            Height;
+    };
+
+    FOLImageAsyncLoadThread() : bStopRequested(FALSE), QueueHead(0), QueueTail(0)
+        , ResultHead(0), ResultTail(0) {}
+
+    virtual UBOOL Init() { return TRUE; }
+
+    virtual DWORD Run()
+    {
+        while (!bStopRequested)
+        {
+            FRequest Req;
+            bool bHasReq = false;
+            {
+                FScopeLock SL(&Lock);
+                if (QueueHead != QueueTail)
+                {
+                    Req = Queue[QueueHead];
+                    QueueHead = (QueueHead + 1) % OL_IMAGE_LOADER_MAX_ASYNC;
+                    bHasReq = true;
+                }
+            }
+
+            if (!bHasReq) { appSleep(0.01f); continue; }
+
+            FResult Res;
+            SafeCopyA(Res.Name, sizeof(Res.Name), Req.Name);
+            Res.Pixels = NULL; Res.Width = 0; Res.Height = 0;
+
+            FILE* f = fopen(Req.Path, "rb");
+            if (f)
+            {
+                fseek(f, 0, SEEK_END);
+                long FSize = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                if (FSize > 0 && FSize <= 32 * 1024 * 1024)
+                {
+                    unsigned char* Raw = (unsigned char*)malloc(FSize);
+                    if (Raw)
+                    {
+                        fread(Raw, 1, FSize, f);
+                        int Channels = 0;
+                        Res.Pixels = stbi_load_from_memory(Raw, (int)FSize, &Res.Width, &Res.Height, &Channels, 4);
+                        free(Raw);
+                    }
+                }
+                fclose(f);
+            }
+
+            {
+                FScopeLock SL(&Lock);
+                INT NextTail = (ResultTail + 1) % OL_IMAGE_LOADER_MAX_ASYNC;
+                if (NextTail != ResultHead) // drop on overflow (shouldn't happen — bounded by pending count)
+                {
+                    Results[ResultTail] = Res;
+                    ResultTail = NextTail;
+                }
+                else if (Res.Pixels)
+                {
+                    stbi_image_free(Res.Pixels);
+                }
+            }
+        }
+        return 0;
+    }
+
+    virtual void Stop() { bStopRequested = TRUE; }
+    virtual void Exit() {}
+
+    // Queues one file for background decode. Game thread only.
+    void Enqueue(const char* Name, const char* Path)
+    {
+        FScopeLock SL(&Lock);
+        INT NextTail = (QueueTail + 1) % OL_IMAGE_LOADER_MAX_ASYNC;
+        if (NextTail == QueueHead) return; // queue full — drop silently, RequestAsync() de-dupes anyway
+        FRequest& R = Queue[QueueTail];
+        SafeCopyA(R.Name, sizeof(R.Name), Name);
+        SafeCopyA(R.Path, sizeof(R.Path), Path);
+        QueueTail = NextTail;
+    }
+
+    // Pops one finished result if available. Caller takes ownership of Pixels
+    // (must stbi_image_free it, or hand it off). Game thread only.
+    bool PopResult(FResult& Out)
+    {
+        FScopeLock SL(&Lock);
+        if (ResultHead == ResultTail) return false;
+        Out = Results[ResultHead];
+        ResultHead = (ResultHead + 1) % OL_IMAGE_LOADER_MAX_ASYNC;
+        return true;
+    }
+
+    volatile UBOOL bStopRequested;
+
+private:
+    struct FRequest
+    {
+        char Name[128];
+        char Path[768];
+    };
+
+    FCriticalSection Lock;
+    FRequest Queue[OL_IMAGE_LOADER_MAX_ASYNC];
+    INT      QueueHead, QueueTail;
+    FResult  Results[OL_IMAGE_LOADER_MAX_ASYNC];
+    INT      ResultHead, ResultTail;
+};
+
+// ---------------------------------------------------------------------------
 // FOLImageLoader
 // ---------------------------------------------------------------------------
 
 FOLImageLoader::FOLImageLoader()
-    : Count(0)
+    : Count(0), AsyncPendingCount(0), AsyncThread(NULL), AsyncRunnableThread(NULL)
 {
     BaseDir[0] = '\0';
 }
 
 FOLImageLoader::~FOLImageLoader()
 {
+    if (AsyncRunnableThread)
+    {
+        AsyncThread->Stop();
+        AsyncRunnableThread->WaitForCompletion();
+        GThreadFactory->Destroy(AsyncRunnableThread);
+        AsyncRunnableThread = NULL;
+    }
+    delete AsyncThread;
+    AsyncThread = NULL;
     ReleaseAll();
 }
 

@@ -4,8 +4,9 @@
 set -e
 
 # ---- Configure before use ------------------------------------------------
-WINEPREFIX="$HOME/.local/share/prefixes/OL1Compile"
-COOK_ARGS="-platform=PCConsole -multilanguagecook=INT"
+WINEPREFIX="/mnt/ext41/OL1Compile"
+COOK_SHIPPINGDIR="Z:/mnt/ntfs2/SteamAPP/steamapps/common/Outlast/OLGame/CookedPCConsole"
+COOK_ARGS="-platform=PCConsole -multilanguagecook=INT -modcook -full -MODTEXINPKG"
 # --------------------------------------------------------------------------
 
 if [ -z "$WINEPREFIX" ]; then
@@ -14,16 +15,15 @@ if [ -z "$WINEPREFIX" ]; then
 fi
 
 # ---- Paths ----------------------------------------------------------------
-# On this machine the full MSVC 2012 install, the Windows 8.0 SDK and the
-# C++ build targets all live under "Program Files (x86)".  The non-x86
-# "Microsoft Visual Studio 11.0" dir is only a partial install (Common7).
+# msiextract unpacks into "Program Files/..." relative to drive_c (no x86 prefix).
+# DirectX SDK is cloned into Program Files (x86)/ separately.
 WINEPREFIX_C="$WINEPREFIX/drive_c"
-VS_ROOT="$WINEPREFIX_C/Program Files (x86)/Microsoft Visual Studio 11.0"
-SDK_ROOT="$WINEPREFIX_C/Program Files (x86)/Windows Kits/8.0"
+VS_ROOT="$WINEPREFIX_C/Program Files/Microsoft Visual Studio 11.0"
+SDK_ROOT="$WINEPREFIX_C/Program Files/Windows Kits/8.0"
 DX_ROOT="$WINEPREFIX_C/Program Files (x86)/Microsoft DirectX SDK (June 2010)"
 
-VS_ROOT_W="C:\\Program Files (x86)\\Microsoft Visual Studio 11.0"
-SDK_ROOT_W="C:\\Program Files (x86)\\Windows Kits\\8.0"
+VS_ROOT_W="C:\\Program Files\\Microsoft Visual Studio 11.0"
+SDK_ROOT_W="C:\\Program Files\\Windows Kits\\8.0"
 DX_ROOT_W="C:\\Program Files (x86)\\Microsoft DirectX SDK (June 2010)"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -36,14 +36,15 @@ OLGAME_EXE="$OL1_DIR/Binaries/Win64/OLGame.exe"
 UBT_EXE="$(realpath "$DEV_DIR/Intermediate/UnrealBuildTool/Release/UnrealBuildTool.exe")"
 UBT_CSPROJ="$(realpath "$SRC_DIR/UnrealBuildTool/UnrealBuildTool.csproj")"
 LAUNCHER_VCXPROJ="$(realpath "$TOOLS_DIR/OutlastLauncher/OutlastLauncher.vcxproj")"
-RELAY_VCXPROJ="$(realpath "$DEV_DIR/External/openol_relay/OpenOL_Relay.vcxproj")"
 
 MSBUILD="C:\\windows\\Microsoft.NET\\Framework64\\v4.0.30319\\MSBuild.exe"
 
 # ---- Wine environment -----------------------------------------------------
-
+export WINEPREFIX
 export WINEARCH=win64
 export WINEDEBUG=-all
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
 
 export VS110COMNTOOLS="$VS_ROOT_W\\Common7\\Tools\\"
 export WindowsSdkDir="$SDK_ROOT_W\\"
@@ -75,34 +76,44 @@ run_msbuild() {
 run_ubt() {
     local CONFIG="$1"
     local REBUILD="${2:-}"
+    local EXTRA_DEFINES="${3:-}"
+    local OUTPUT="${4:-../../Binaries/Win64/OLGame.exe}"
+    local INTERMEDIATE="${5:-../../Intermediate}"
+    local DEBUG_FLAGS="${6--forcedebuginfo -pdb}"
     cd "$SRC_DIR"
     if [ -n "$REBUILD" ]; then
         # Delete all obj files to force full rebuild
         echo "Cleaning obj files..."
-        find "$(realpath "$DEV_DIR/Intermediate/OLGame")" -name "*.obj" -delete 2>/dev/null || true
+        local INTERMEDIATE_ABS
+        INTERMEDIATE_ABS="$(cd "$SRC_DIR" && realpath "$INTERMEDIATE")"
+        find "$INTERMEDIATE_ABS/OLGame" -name "*.obj" -delete 2>/dev/null || true
     fi
     wine "$UBT_EXE" OLGame Win64 "$CONFIG" -DEPLOY \
-        -output "../../Binaries/Win64/OLGame.exe" -nopdb -define WITH_STEAMWORKS=1
+        -output "$OUTPUT" -intermediate "$INTERMEDIATE" $DEBUG_FLAGS -define WITH_STEAMWORKS=1 $EXTRA_DEFINES
 }
 
 # ---- Menu -----------------------------------------------------------------
-# Optional non-interactive mode: pass the option as an argument, e.g.:
-#   ./build_wine.sh 1   # Build OLGame.exe (UBT, incremental)
-CHOICE="${1:-}"
-if [ -z "$CHOICE" ]; then
-    echo ""
-    echo "  OL1 Build Menu"
-    echo "  ─────────────────────────────────"
-    echo "  1) Build UnrealBuildTool   (MSBuild, Release)"
-    echo "  2) Build openol_relay      (MSVC, Release|x64)"
-    echo "  3) Build OLGame.exe        (UBT, incremental)"
-    echo "  4) Rebuild OLGame.exe      (UBT, clean obj)"
-    echo "  5) Build OutlastLauncher   (MSVC, Release|Win32)"
-    echo "  6) Build UnrealScript      (make -auto)"
-    echo "  7) Rebuild UnrealScript    (make -auto -full)"
-    echo "  8) Cook Packages           (CookPackages \$COOK_ARGS)"
-    echo ""
-    printf "  Choice [1-8]: "
+echo ""
+echo "  OL1 Build Menu"
+echo "  ─────────────────────────────────"
+echo "  1) Build OLGame.exe          (UBT, incremental)"
+echo "  2) Rebuild OLGame.exe        (UBT, clean obj)"
+echo "  3) Build OLGame Production   (WITH_EDITOR=0, incremental)"
+echo "  4) Rebuild OLGame Production (WITH_EDITOR=0, clean obj)"
+echo "  5) Build OutlastLauncher     (MSVC, Release|Win32)"
+echo "  6) Build UnrealBuildTool     (MSBuild, Release)"
+echo "  7) Build UnrealScript        (make -auto)"
+echo "  8) Rebuild UnrealScript      (make -auto -full)"
+echo "  9) Cook Packages             (CookPackages \$COOK_ARGS)"
+echo " 10) Build openol_browser      (CEF offscreen, Release|x64)"
+echo " 11) Build openol_relay.lib    (MSVC, Release|x64)"
+echo " 12) Build imgui.lib           (MSVC, Release|x64)"
+echo ""
+if [ -n "$1" ]; then
+    CHOICE="$1"
+    shift
+else
+    printf "  Choice [1-12]: "
     read -r CHOICE
 fi
 
@@ -113,33 +124,24 @@ open_link() {
 
 case "$CHOICE" in
     1)
-        echo "[build_wine] Build UnrealBuildTool"
-        UBT_OUT_W="Z:$(realpath "$DEV_DIR/Intermediate/UnrealBuildTool/Release/" | sed 's|/|\\|g')\\"
-        run_msbuild "$UBT_CSPROJ" "Release" "AnyCPU" "/p:OutputPath=$UBT_OUT_W"
-        open_link "$(realpath "$DEV_DIR/Intermediate/UnrealBuildTool/Release/UnrealBuildTool.exe")"
-        ;;
-    2)
-        echo "[build_wine] Build openol_relay"
-        wine "$MSBUILD" \
-            "Z:$(echo "$RELAY_VCXPROJ" | sed 's|/|\\|g')" \
-            /p:Configuration=Release \
-            /p:Platform=x64 \
-            "/p:VCTargetsPath=C:\\Program Files (x86)\\MSBuild\\Microsoft.Cpp\\v4.0\\V110\\" \
-            /p:TrackFileAccess=false \
-            "/p:WindowsSdkDir=$SDK_ROOT_W\\" \
-            "/p:VCInstallDir=$VS_ROOT_W\\VC\\" \
-            /verbosity:minimal /nologo
-        open_link "$(realpath "$DEV_DIR/External/openol_relay/lib/openol_relay.lib")"
-        ;;
-    3)
         echo "[build_wine] Build OLGame.exe (incremental)"
         run_ubt Release
         open_link "$(realpath "$DEV_DIR/../Binaries/Win64/OLGame.exe")"
         ;;
-    4)
+    2)
         echo "[build_wine] Rebuild OLGame.exe (clean)"
         run_ubt Release "rebuild"
         open_link "$(realpath "$DEV_DIR/../Binaries/Win64/OLGame.exe")"
+        ;;
+    3)
+        echo "[build_wine] Build OLGame Production (WITH_EDITOR=0, incremental)"
+        run_ubt Release "" "-define WITH_EDITOR=0" "../../Binaries/Win64/Production/OLGame.exe" "../../Intermediate/Production" ""
+        open_link "$(realpath "$DEV_DIR/../Binaries/Win64/Production/OLGame.exe")"
+        ;;
+    4)
+        echo "[build_wine] Rebuild OLGame Production (WITH_EDITOR=0, clean)"
+        run_ubt Release "rebuild" "-define WITH_EDITOR=0" "../../Binaries/Win64/Production/OLGame.exe" "../../Intermediate/Production" ""
+        open_link "$(realpath "$DEV_DIR/../Binaries/Win64/Production/OLGame.exe")"
         ;;
     5)
         echo "[build_wine] Build OutlastLauncher"
@@ -147,34 +149,87 @@ case "$CHOICE" in
             "Z:$(echo "$LAUNCHER_VCXPROJ" | sed 's|/|\\|g')" \
             /p:Configuration=Release \
             /p:Platform=Win32 \
-            "/p:VCTargetsPath=C:\\Program Files (x86)\\MSBuild\\Microsoft.Cpp\\v4.0\\V110\\" \
+            "/p:VCTargetsPath=C:\\Program Files\\MSBuild\\Microsoft.Cpp\\v4.0\\V110\\" \
             /p:TrackFileAccess=false \
             "/p:WindowsSdkDir=$SDK_ROOT_W\\" \
             "/p:VCInstallDir=$VS_ROOT_W\\VC\\" \
             /verbosity:minimal /nologo
         open_link "$(realpath "$TOOLS_DIR/OutlastLauncher/Release/OutlastLauncher.exe")"
         ;;
-    6|7|8)
+    6)
+        echo "[build_wine] Build UnrealBuildTool"
+        UBT_OUT_W="Z:$(realpath "$DEV_DIR/Intermediate/UnrealBuildTool/Release/" | sed 's|/|\\|g')\\"
+        run_msbuild "$UBT_CSPROJ" "Release" "AnyCPU" "/p:OutputPath=$UBT_OUT_W"
+        open_link "$(realpath "$DEV_DIR/Intermediate/UnrealBuildTool/Release/UnrealBuildTool.exe")"
+        ;;
+    7|8|9)
         if [ ! -f "$OLGAME_EXE" ]; then
             echo "WARNING: OLGame.exe not found: $OLGAME_EXE"
-            echo "         Build it first with option 3 or 4."
+            echo "         Build it first with option 1 or 2."
             exit 1
         fi
         case "$CHOICE" in
-            6)
-                echo "[build_wine] Build UnrealScript"
-                WINEPATH="" wine "$OLGAME_EXE" make -auto
-                ;;
             7)
-                echo "[build_wine] Rebuild UnrealScript"
-                WINEPATH="" wine "$OLGAME_EXE" make -auto -full
+                echo "[build_wine] Build UnrealScript"
+                WINEPATH="" wine "$OLGAME_EXE" make -auto -unattended -nopause -stdout
                 ;;
             8)
-                echo "[build_wine] Cook Packages: $COOK_ARGS"
+                echo "[build_wine] Rebuild UnrealScript"
+                WINEPATH="" wine "$OLGAME_EXE" make -auto -full -unattended -nopause -stdout
+                ;;
+            9)
+                # Maps can be passed as extra arguments: ./build_wine.sh 9 sewers_01.udk sewers_02.udk
+                # If none provided, prompt for them.
+                if [ "$#" -gt 0 ]; then
+                    COOK_MAPS="$*"
+                else
+                    printf "  Maps to cook (e.g. sewers_01.udk sewers_02.udk): "
+                    read -r COOK_MAPS
+                fi
+                COOK_SHIPPINGDIR_ARG=""
+                if [ -n "$COOK_SHIPPINGDIR" ]; then
+                    COOK_SHIPPINGDIR_ARG="-shippingdir=$COOK_SHIPPINGDIR"
+                fi
+                echo "[build_wine] Cook Packages: $COOK_MAPS $COOK_ARGS $COOK_SHIPPINGDIR_ARG"
                 # shellcheck disable=SC2086
-                WINEPATH="" wine "$OLGAME_EXE" CookPackages $COOK_ARGS
+                WINEPATH="" wine "$OLGAME_EXE" CookPackages $COOK_MAPS $COOK_ARGS $COOK_SHIPPINGDIR_ARG -unattended -nopause -stdout
                 ;;
         esac
+        ;;
+    10)
+        echo "[build_wine] Build openol_browser (MinGW-w64, CEF offscreen, x64)"
+        BROWSER_DIR="$(realpath "$DEV_DIR/External/openol_browser")"
+        make -C "$BROWSER_DIR" -j"$(nproc)"
+        open_link "$BROWSER_DIR/bin/openol_browser.exe"
+        ;;
+    11)
+        echo "[build_wine] Build openol_relay.lib (MSVC, Release|x64)"
+        RELAY_VCXPROJ="$(realpath "$DEV_DIR/External/openol_relay/OpenOL_Relay.vcxproj")"
+        wine "$MSBUILD" \
+            "Z:$(echo "$RELAY_VCXPROJ" | sed 's|/|\\|g')" \
+            /p:Configuration=Release \
+            /p:Platform=x64 \
+            "/p:VCTargetsPath=C:\\Program Files\\MSBuild\\Microsoft.Cpp\\v4.0\\V110\\" \
+            /p:TrackFileAccess=false \
+            "/p:WindowsSdkDir=$SDK_ROOT_W\\" \
+            "/p:VCInstallDir=$VS_ROOT_W\\VC\\" \
+            /verbosity:minimal /nologo
+        RELAY_LIB="$(realpath "$DEV_DIR/External/openol_relay/x64/Release/openol_relay.lib" 2>/dev/null || echo "$DEV_DIR/External/openol_relay/x64/Release/openol_relay.lib")"
+        open_link "$RELAY_LIB"
+        ;;
+    12)
+        echo "[build_wine] Build imgui.lib (MSVC, Release|x64)"
+        IMGUI_VCXPROJ="$(realpath "$DEV_DIR/External/imgui/ImGui.vcxproj")"
+        wine "$MSBUILD" \
+            "Z:$(echo "$IMGUI_VCXPROJ" | sed 's|/|\\|g')" \
+            /p:Configuration=Release \
+            /p:Platform=x64 \
+            "/p:VCTargetsPath=C:\\Program Files\\MSBuild\\Microsoft.Cpp\\v4.0\\V110\\" \
+            /p:TrackFileAccess=false \
+            "/p:WindowsSdkDir=$SDK_ROOT_W\\" \
+            "/p:VCInstallDir=$VS_ROOT_W\\VC\\" \
+            /verbosity:minimal /nologo
+        open_link "$(realpath "$DEV_DIR/External/imgui/lib/imgui.lib" 2>/dev/null || echo "$DEV_DIR/External/imgui/lib/imgui.lib")"
         ;;
     *)
         echo "Invalid choice."

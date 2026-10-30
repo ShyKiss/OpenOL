@@ -859,6 +859,7 @@ native function bool TryGrabUnder();
 native function bool InvestigateObject(Actor anActor);
 
 native function bool IsInAttackRange();
+native function bool IsImprovedAI();
 native function bool IsInApproachAttackRange(); // rcharpentier - IsInAttackRange with some extra padding
 native function bool IsInFinalAttackRange(); // rcharpentier - same but with more padding, to account for moving targets
 
@@ -2595,9 +2596,12 @@ Begin:
 		FinishRotation();
 	}
 
-	while (TargetPlayer != None && TargetPlayer.SpecialMove != SMT_None)
+	if (!IsImprovedAI())
 	{
-		Sleep(0.1f);
+		while (TargetPlayer != None && TargetPlayer.SpecialMove != SMT_None)
+		{
+			Sleep(0.1f);
+		}
 	}
 
 	if (TargetInSpecialLocation() || !PerformAttackCheck() || !IsInFinalAttackRange())
@@ -2833,9 +2837,12 @@ Begin:
 			FinishRotation();
 		}
 
-		while (TargetPlayer.SpecialMove == SMT_EnterLocker)
+		if (!IsImprovedAI())
 		{
-			Sleep(0.1f);
+			while (TargetPlayer.SpecialMove == SMT_EnterLocker)
+			{
+				Sleep(0.1f);
+			}
 		}
 
 		// Initiate Locker Grab
@@ -2933,9 +2940,12 @@ Begin:
 			FinishRotation();
 		}
 
-		while (TargetPlayer.SpecialMove == SMT_EnterBed)
+		if (!IsImprovedAI())
 		{
-			Sleep(0.1f);
+			while (TargetPlayer.SpecialMove == SMT_EnterBed)
+			{
+				Sleep(0.1f);
+			}
 		}
 
 		if (TargetPlayer.LocomotionMode == LM_Bed)
@@ -3016,9 +3026,12 @@ Begin:
 		FinishRotation();
 	}
 
-	while (TargetPlayer != None && TargetPlayer.SpecialMove != SMT_None)
+	if (!IsImprovedAI())
 	{
-		Sleep(0.1f);
+		while (TargetPlayer != None && TargetPlayer.SpecialMove != SMT_None)
+		{
+			Sleep(0.1f);
+		}
 	}
 
 	if (TargetInSpecialLocation() || (!TargetPlayer.bIsDummyPawn && !PerformGrabCheck()))
@@ -3091,9 +3104,12 @@ Begin:
 		FinishRotation();
 	}
 
-	while (TargetPlayer != None && TargetPlayer.SpecialMove != SMT_None)
+	if (!IsImprovedAI())
 	{
-		Sleep(0.1f);
+		while (TargetPlayer != None && TargetPlayer.SpecialMove != SMT_None)
+		{
+			Sleep(0.1f);
+		}
 	}
 
 	if (TargetInSpecialLocation())
@@ -3177,9 +3193,12 @@ Begin:
 		FinishRotation();
 	}
 
-	while (TargetPlayer != None && TargetPlayer.SpecialMove != SMT_None)
+	if (!IsImprovedAI())
 	{
-		Sleep(0.1f);
+		while (TargetPlayer != None && TargetPlayer.SpecialMove != SMT_None)
+		{
+			Sleep(0.1f);
+		}
 	}
 
 	if (TargetInSpecialLocation())
@@ -3514,7 +3533,10 @@ state WaitForDoor extends Interruption
 Begin:
 	`AILog("Pause", 'AIState');
 
-	Sleep(2.f);
+	if (!IsImprovedAI())
+	{
+		Sleep(2.f);
+	}
 
 	Recalculate(true);
 	GotoState('Idle');

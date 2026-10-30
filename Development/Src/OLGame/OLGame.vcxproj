@@ -59,7 +59,7 @@
     <NMakeForcedUsingAssemblies Condition="'$(Configuration)|$(Platform)'=='BuiltWithUnrealBuildTool|Xbox 360'">$(NMakeForcedUsingAssemblies)</NMakeForcedUsingAssemblies>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='BuiltWithUnrealBuildTool|Win32'">
-    <IncludePath>$(ProjectDir)Inc;$(ProjectDir)Src;$(ProjectDir)..\Engine\Src;$(ProjectDir)..\Engine\Inc;$(ProjectDir)..\Core\Src;$(ProjectDir)..\Core\Inc;$(ProjectDir)..\UDKBase\Src;$(ProjectDir)..\UDKBase\Inc;$(ProjectDir)..\AkAudio\Src;$(ProjectDir)..\AkAudio\Inc;$(ProjectDir)..\Multiplayer\Inc;$(ProjectDir)..\..\External\openol_relay\include;$(ProjectDir)..\OnlineSubsystemSteamworks\Inc;$(ProjectDir)..\..\External\Steamworks\sdk\public;$(ProjectDir)..\..\External\imgui\include;$(IncludePath)</IncludePath>
+    <IncludePath>$(ProjectDir)Inc;$(ProjectDir)Src;$(ProjectDir)..\Engine\Src;$(ProjectDir)..\Engine\Inc;$(ProjectDir)..\Core\Src;$(ProjectDir)..\Core\Inc;$(ProjectDir)..\UDKBase\Src;$(ProjectDir)..\UDKBase\Inc;$(ProjectDir)..\AkAudio\Src;$(ProjectDir)..\AkAudio\Inc;$(ProjectDir)..\Multiplayer\Inc;$(ProjectDir)..\TASGame\Inc;$(ProjectDir)..\..\External\openol_relay\include;$(ProjectDir)..\OnlineSubsystemSteamworks\Inc;$(ProjectDir)..\..\External\Steamworks\sdk\public;$(ProjectDir)..\..\External\imgui\include;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup>
   </ItemDefinitionGroup>
@@ -550,6 +550,8 @@
     <ClCompile Include="Src\OLHeroCamera.cpp" />
     <ClCompile Include="Src\OLHUD.cpp" />
     <ClCompile Include="Src\OLImGui.cpp" />
+    <ClCompile Include="Src\OLImGui_LoadingOverlay.cpp" />
+    <ClCompile Include="Src\OLQuickSave.cpp" />
     <ClCompile Include="Src\OLImGui_AssetPreview.cpp" />
     <ClCompile Include="Src\OLCmd_Player.cpp" />
     <ClCompile Include="Src\OLImGui_Actions.cpp" />
@@ -558,6 +560,10 @@
     <ClCompile Include="Src\OLImGui_MultiplayerHUD.cpp" />
     <ClCompile Include="Src\OLImGui_Spawns.cpp" />
     <ClCompile Include="Src\OLImGui_Spawns_Enemies.cpp" />
+    <ClCompile Include="Src\OLImGui_Spawns_Lighting.cpp" />
+    <ClCompile Include="Src\OLImGui_Spawns_Fog.cpp" />
+    <ClCompile Include="Src\OLImGui_Spawns_Doors.cpp" />
+    <ClCompile Include="Src\OLImGui_Spawns_Props.cpp" />
     <ClCompile Include="Src\OLImGui_Bindings.cpp" />
     <ClCompile Include="Src\OLImGui_Console.cpp" />
     <ClCompile Include="Src\OLImGui_Locale.cpp" />
@@ -594,6 +600,7 @@
     <ClCompile Include="..\Multiplayer\Src\MultiplayerHUD.cpp" />
     <ClCompile Include="..\Multiplayer\Src\RelayThread.cpp" />
     <ClCompile Include="..\Multiplayer\Src\P2PBridge.cpp" />
+    <ClCompile Include="..\TASGame\Src\TASPlayerController.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Inc\OLDingo.h" />

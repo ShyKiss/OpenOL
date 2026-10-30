@@ -6,6 +6,8 @@
 #include "OLGame.h"
 #include "AkAudioDevice.h"
 
+extern UBOOL GImprovedAI;
+
 IMPLEMENT_CLASS(UOLBTBehavior);
 IMPLEMENT_CLASS(UOLBTBehaviorTree);
 
@@ -613,7 +615,7 @@ void UOLBTMoveToDisturbanceTask::OnInitialize()
 		newMove.DestinationPoint = Owner->VisualDisturbance.Location;
 	}
 	newMove.Type = MT_Point;
-	newMove.DestinationBuffer = 1000.0f;
+	newMove.DestinationBuffer = GImprovedAI ? 0.0f : 1000.0f;
 	newMove.bIsDynamic = TRUE; // To not log debug info.
 
 	bStartedAtDestination = Owner->eventStartMove(newMove);
@@ -631,7 +633,7 @@ UBOOL UOLBTMoveToDisturbanceTask::CompareTaskState(const UOLBTTask* Other)
 		newMove.DestinationPoint = Owner->VisualDisturbance.Location;
 	}
 	newMove.Type = MT_Point;
-	newMove.DestinationBuffer = 1000.0f;
+	newMove.DestinationBuffer = GImprovedAI ? 0.0f : 1000.0f;
 	newMove.bIsDynamic = TRUE; // To not log debug info.
 
 	return Super::CompareTaskState(Other) && Owner->eventCompareMoves(Owner->CurrentMove, newMove);

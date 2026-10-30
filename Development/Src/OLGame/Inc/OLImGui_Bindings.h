@@ -21,7 +21,9 @@ void OLImGui_Bindings_Load();
 // Called after ImGui::Button to attach a binding to the last drawn item.
 // Registers the action (first call), shows RMB popup, shows key hint in tooltip.
 // Fn_ is used for key-fire dispatch; may be NULL for DBG_CMD_B (no key-fire).
-void OLImGui_Bindings_RegisterLast(const char* ActionId, OLImGuiCallFn Fn);
+// Description, if non-NULL/non-empty, is shown as a first line above the
+// "RMB to bind/rebind" hint in the same tooltip — what the item actually does.
+void OLImGui_Bindings_RegisterLast(const char* ActionId, OLImGuiCallFn Fn, const char* Description = NULL);
 
 // Save all bindings to OpenOL/bindings.ini.
 void OLImGui_Bindings_Save();
@@ -38,6 +40,8 @@ int         OLImGui_Bindings_FindKeyIdx(int VK); // returns 0 (None) if not foun
 
 // Overlay toggle key.
 void OLImGui_Bindings_SetOverlayToggle(int VK);
+int  OLImGui_GetOverlayToggleVK();    // returns Win32 VK code; 0 if not set
+int  OLImGui_GetOverlayToggleImKey(); // returns ImGuiKey value; ImGuiKey_None if not mapped
 
 // Draw the bind popup if one is pending. Call once per frame inside OLImGui_BuildUI.
 void OLImGui_Bindings_DrawPopup();

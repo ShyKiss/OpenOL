@@ -6,6 +6,8 @@
 
 #include "OLGame.h"
 #include "EngineAnimClasses.h"
+
+extern UBOOL GImprovedAI;
 #include "GameFrameworkAnimClasses.h"
 #include "UDKBaseAnimationClasses.h"
 #include "OLGameAnimClasses.h"
@@ -971,6 +973,9 @@ void AOLEnemyPawn::MoveOutOfTheWay()
 
 UBOOL AOLEnemyPawn::CanBeKnockedback(UBOOL bForced /*= FALSE*/)
 {
+	if (GImprovedAI && Bot && Bot->IsInAttackRange() && Modifiers.bShouldAttack)
+		return FALSE;
+
 	UBOOL bReturn = FALSE;
 
 	if (Bot && !Bot->IsInState(Bot->InterruptionState) && !Bot->IsPerformingMoveAbility() && !Bot->bInvestigatingObject && (bForced || (!Bot->bAttacking && !Modifiers.bDisableKnockbackFromPlayer && bCanBeKnockedback)) )
