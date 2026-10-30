@@ -88,7 +88,7 @@ if [[ -n "$MESSAGE" ]]; then
 
     # Default-deny .gitignore: -A only reaches tracked files and whitelisted own code.
     python3 Development/Src/Targets/git_track.py --add
-    git add -A
+    git -c advice.addEmbeddedRepo=false add -A
     check_staged .
     commit_repo .
 fi

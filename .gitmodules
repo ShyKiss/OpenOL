@@ -1,0 +1,3 @@
+[submodule "Development/Src/Multiplayer/server"]
+	path = Development/Src/Multiplayer/server
+	url = https://github.com/ShyKiss/OpenOL-Relay.git

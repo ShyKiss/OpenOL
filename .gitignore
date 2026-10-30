@@ -5,6 +5,7 @@
 /*
 !/.gitignore
 !/.gitattributes
+!/.gitmodules
 !/.github/
 !/CI/
 !/docs/
