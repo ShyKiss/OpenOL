@@ -1,70 +1,50 @@
 /*=============================================================================
-    server.c - core server logic (embedded relay build — no cli dependency)
+    server.c - core server logic, shared by the embedded relay (OLGame.exe,
+    OPENOL_EMBEDDED) and the standalone OpenOL_Relay.
 =============================================================================*/
 #ifdef _MSC_VER
 #  pragma warning(disable: 4127) /* conditional expression is constant */
 #endif
 #include "server.h"
 #include "relay_compat.h"  /* snprintf polyfill — after server.h pulls in winsock2 */
+#include "openol_protocol.h"
+#ifndef OPENOL_EMBEDDED
+#  include "cli.h"
+#endif
 #include <stdarg.h>
 
 // ---------------------------------------------------------------------------
-// Session token generation (rand-based, seeded once at startup)
+// Session token generation
 // ---------------------------------------------------------------------------
 
-static void gen_session_token(uint8_t out[32]) {
-    static int seeded = 0;
-    int i;
-    if (!seeded) { srand((unsigned int)time(NULL)); seeded = 1; }
-    for (i = 0; i < 32; i++) out[i] = (uint8_t)(rand() & 0xFF);
+// Fills out with bytes from the OS CSPRNG. Returns 0 on failure.
+static int os_random(uint8_t *out, unsigned len) {
+#ifdef _WIN32
+    typedef BOOLEAN (APIENTRY *RtlGenRandomFn)(PVOID, ULONG);
+    RtlGenRandomFn gen = NULL;
+    HMODULE lib = LoadLibraryA("advapi32.dll");
+    if (lib) gen = (RtlGenRandomFn)GetProcAddress(lib, "SystemFunction036");
+    return gen && gen(out, len);
+#else
+    size_t got = 0;
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) { got = fread(out, 1, len, f); fclose(f); }
+    return got == len;
+#endif
 }
 
-/* Binary server→client packet IDs (must match ServerPackets.h in client).
- * Codes >= 0xE0 — client detects binary by (data[0] < 0x20 || data[0] >= 0xE0). */
-#define SRV_READY        0xE0
-#define SRV_ONLINE_COUNT 0xE1
-#define SRV_HELLO_FAIL   0xE2
-#define SRV_DISCONNECT   0xE3
-#define SRV_DOOR_DENY    0xE4
-
-/* Client→server 2-byte header: [channel][type][player_id LE4][payload...] */
-#define CH_SRV   0x00
-#define CH_HERO  0x01
-#define CH_DOOR  0x02
-#define CH_ENEMY 0x03
-#define CH_PUSH  0x04
-#define CH_WORLD 0x05
-#define SRV_HELLO 0x01
-#define SRV_PING  0x02
-#define HERO_STATE          0x01
-#define HERO_NICK           0x02
-#define HERO_SMT_TYPE       0x06
-#define HERO_PLAYER_LIFECYCLE 0x08
-#define DOOR_LOCK   0x01
-#define DOOR_UNLOCK 0x02
-#define DOOR_STATE  0x03
-#define DOOR_OPEN   0x04
-#define DOOR_CLOSE  0x05
-#define DOOR_ANGLE  0x06
-#define DOOR_INIT   0x09
-#define ENEMY_SPAWN      0x01
-#define ENEMY_DEL        0x02
-#define ENEMY_SMT        0x03
-#define ENEMY_LOC        0x08
-#define PUSH_STATE  0x01
-#define PUSH_DENIED 0x02
-#define PUSH_INIT   0x03
-#define WORLD_TRIGGER_ACT    0x01
-#define WORLD_PICKUP_STATE   0x03
-#define WORLD_PICKUP_KISMET  0x06
-#define WORLD_DISCONNECT     0x08
-#define WORLD_REQUEST_ENEMIES   0x0A
-#define WORLD_REQUEST_DOORS     0x0B
-#define WORLD_REQUEST_PUSHABLES 0x0C
-#define WORLD_MATINEE_STATE  0x0D
+static void gen_session_token(uint8_t out[32]) {
+    if (!os_random(out, 32)) {
+        // Last resort only: a predictable token is still better than no session.
+        int i;
+        srand((unsigned int)time(NULL) ^ (unsigned int)(size_t)out);
+        for (i = 0; i < 32; i++) out[i] = (uint8_t)(rand() & 0xFF);
+    }
+}
 
 // ---------------------------------------------------------------------------
-// Logging — writes to history ring (consumed by ImGui panel on game thread)
+// Logging — history ring in the embedded build (consumed by the ImGui panel),
+// cli_log in the standalone build (handles both TUI and plain-text modes)
 // ---------------------------------------------------------------------------
 
 static void server_log(Server *s, const char *fmt, ...) {
@@ -77,7 +57,12 @@ static void server_log(Server *s, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(body, sizeof(body), fmt, ap);
     va_end(ap);
+#ifdef OPENOL_EMBEDDED
     history_push(s, "[%s] %s", ts, body);
+#else
+    (void)s;
+    cli_log("[%s] %s", ts, body);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +285,16 @@ static void send_disconnect_notify(Server *s, int room_idx, int player_id) {
     server_broadcast_room(s, room_idx, (const char *)buf, 9);
 }
 
+/* Send PUSH_DENIED: [CH_PUSH][PUSH_DENIED][0 LE4][KeyX(4)][KeyY(4)][KeyZ(4)] */
+static void send_push_denied(Server *s, const Addr *addr, const char *key_xyz) {
+    unsigned char buf[OL_HEADER_SIZE + 12];
+    memset(buf, 0, sizeof(buf));
+    buf[0] = CH_PUSH;
+    buf[1] = PUSH_DENIED;
+    memcpy(buf + OL_HEADER_SIZE, key_xyz, 12);
+    server_send(s, addr, (const char *)buf, sizeof(buf));
+}
+
 /* Send SRV_DOOR_DENY: [0x2B][0x00000000][key_len(1)][key ASCII] */
 static void send_door_deny(Server *s, const Addr *addr, const char *key) {
     unsigned char buf[262];
@@ -468,9 +463,22 @@ void server_snap_enqueue(Player *p, const char *data, int len) {
     p->snap_head = next;
 }
 
-// Drain up to SNAP_DRIP_PER_TICK queued snapshots per player, per tick.
-// Called from server_run each iteration so the send load is spread over many ticks.
+static int server_has_queued_snaps(const Server *s) {
+    int i;
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        const Player *p = &s->players[i];
+        if (p->used && p->snap_head != p->snap_tail) return 1;
+    }
+    return 0;
+}
+
+// Send up to SNAP_DRIP_PER_TICK queued snapshots per player every SNAP_DRIP_INTERVAL.
+// Called from server_run each iteration; time-gated because an iteration runs for
+// every incoming packet, which would otherwise tie the drip rate to server load.
 void server_drain_snaps(Server *s) {
+    double now = mono_now();
+    if (now < s->next_snap_drain) return;
+    s->next_snap_drain = now + SNAP_DRIP_INTERVAL;
     for (int i = 0; i < MAX_CLIENTS; i++) {
         Player *p = &s->players[i];
         if (!p->used || p->snap_head == p->snap_tail) continue;
@@ -655,8 +663,6 @@ static void handle_hello(Server *s, const char *line, const Addr *addr) {
 
     char client_ip[MAX_IP];
     addr_ip_str(addr, client_ip, sizeof(client_ip));
-
-    server_log(s, "[%s] HELLO room='%s' pass='%s'", client_ip, code, password);
 
     if (!hello_check_rate(client_ip)) {
         // Silently drop — don't send a response (prevents amplification)
@@ -990,7 +996,7 @@ void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
         }
 
         // CH_PUSH: pushable snapshot — payload at data[6+]: [KeyX(4)][KeyY(4)][KeyZ(4)][DispX1000(4)][Seq(4)][bPushing(1)]
-        // Embedded relay: last-write-wins, no ownership/deny logic (simplified).
+        // The first player pushing owns the object until they stop; others get PUSH_DENIED.
         if (channel == CH_PUSH && ptype == PUSH_STATE && len >= 27) {
             int px = (int)((unsigned char)data[6]  | ((unsigned char)data[7]  << 8) |
                            ((unsigned char)data[8]  << 16) | ((unsigned char)data[9]  << 24));
@@ -1004,6 +1010,15 @@ void handle_packet(Server *s, const char *data, int len, const Addr *addr) {
                 PushSnapshot *ps = push_alloc(s, pl->room_idx, pkey);
                 if (ps) {
                     int store = len < MAX_PUSH_SNAP_DATA ? len : MAX_PUSH_SNAP_DATA - 1;
+                    if (data[26]) {
+                        if (ps->owner_player_id != 0 && ps->owner_player_id != pl->id) {
+                            send_push_denied(s, &pl->addr, data + OL_HEADER_SIZE);
+                            return;
+                        }
+                        ps->owner_player_id = pl->id;
+                    } else if (ps->owner_player_id == pl->id) {
+                        ps->owner_player_id = 0;
+                    }
                     memcpy(ps->pkt, data, store);
                     ps->pkt_len = store;
                 }
@@ -1334,34 +1349,38 @@ void server_init(Server *s, uint16_t port, const char *name, const char *bind_ip
     history_push(s, "Listening on %s:%d  name='%s'", s->bind_ip, (int)s->port, s->name);
 }
 
-void server_run(Server *s) {
+void server_poll(Server *s) {
     char buf[MAX_PACKET];
+    fd_set rfds;
+    struct timeval tv;
+    int r;
+    FD_ZERO(&rfds);
+    FD_SET(s->sock, &rfds);
+    tv.tv_sec  = 0;
+    /* 50ms keeps shutdown checks and the CLI responsive; wake up sooner while
+       snapshots are queued so the drip rate does not depend on incoming traffic. */
+    tv.tv_usec = server_has_queued_snaps(s) ? (long)(SNAP_DRIP_INTERVAL * 1e6) : 50000;
+    r = select((int)s->sock + 1, &rfds, NULL, NULL, &tv);
 
-    while (!s->shutdown_requested) {
-        fd_set rfds;
-        struct timeval tv;
-        int r;
-        FD_ZERO(&rfds);
-        FD_SET(s->sock, &rfds);
-        tv.tv_sec  = 0;
-        tv.tv_usec = 100000; /* 100ms — allows shutdown check to fire promptly */
-        r = select((int)s->sock + 1, &rfds, NULL, NULL, &tv);
+    if (s->shutdown_requested) return;
 
-        if (s->shutdown_requested) break;
-
-        if (r > 0 && FD_ISSET(s->sock, &rfds)) {
-            Addr from;
-            socklen_t slen = sizeof(from.sa);
-            int len = (int)recvfrom(s->sock, buf, sizeof(buf), 0,
-                                    (struct sockaddr *)&from.sa, &slen);
-            if (len > 0)
-                handle_packet(s, buf, len, &from);
-        }
-
-        run_heartbeat(s);
-        run_timeout(s);
-        server_drain_snaps(s);
+    if (r > 0 && FD_ISSET(s->sock, &rfds)) {
+        Addr from;
+        socklen_t slen = sizeof(from.sa);
+        int len = (int)recvfrom(s->sock, buf, sizeof(buf), 0,
+                                (struct sockaddr *)&from.sa, &slen);
+        if (len > 0)
+            handle_packet(s, buf, len, &from);
     }
+
+    run_heartbeat(s);
+    run_timeout(s);
+    server_drain_snaps(s);
+}
+
+void server_run(Server *s) {
+    while (!s->shutdown_requested)
+        server_poll(s);
 }
 
 void server_shutdown(Server *s) {

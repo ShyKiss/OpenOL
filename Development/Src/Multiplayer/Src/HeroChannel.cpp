@@ -119,7 +119,9 @@ void BuildStatePacket(AOLHero* Hero, UBOOL bSendingJumpGroundZ, FLOAT JumpGround
 
 UBOOL DecodeBinaryState(const BYTE* Data, INT DataLen, FHeroStatePacket& S)
 {
-    if (DataLen < 1)
+    // Size of the fixed fields below, up to and including FootSurf.
+    const INT MinStateSize = 63;
+    if (DataLen < MinStateSize)
         return FALSE;
 
     INT Off = 0;

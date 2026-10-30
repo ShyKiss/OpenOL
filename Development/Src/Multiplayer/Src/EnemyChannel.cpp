@@ -501,9 +501,16 @@ static void ApplySpawn(UEnemyChannel* Ch, INT SenderID,
     FVector  NewLoc(IX, IY, IZ);
     FRotator NewRot(0, Yaw, 0);
 
-    UClass* EClass = FindObject<UClass>(NULL, *(FString(TEXT("OLGame.")) + ClassName), FALSE);
-    if (!EClass)
-        EClass = LoadObject<UClass>(NULL, *(FString(TEXT("OLGame.")) + ClassName), NULL, LOAD_None, NULL);
+    // ClassName comes from the network: accept only a bare name that resolves to an enemy class.
+    UClass* EClass = NULL;
+    if (ClassName.Len() > 0 && ClassName.InStr(TEXT(".")) == -1 && ClassName.InStr(TEXT(":")) == -1)
+    {
+        EClass = FindObject<UClass>(NULL, *(FString(TEXT("OLGame.")) + ClassName), FALSE);
+        if (!EClass)
+            EClass = LoadObject<UClass>(NULL, *(FString(TEXT("OLGame.")) + ClassName), NULL, LOAD_None, NULL);
+        if (EClass && !EClass->IsChildOf(AOLEnemyPawn::StaticClass()))
+            EClass = NULL;
+    }
 
     AOLEnemyPawn* NetEnemy = NULL;
     if (EClass && GWorld)
@@ -813,6 +820,8 @@ void UEnemyChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT D
         INT Yaw = 0, Weapon = 0, HasColor = 0;
         Off = ReadStr(Data, Off, DataLen, EnemyName);
         Off = ReadStr(Data, Off, DataLen, ClassName);
+        // Fixed fields up to the mesh string, plus its length byte, weapon and bColor.
+        if (Off + 17 > DataLen) break;
         Off = ReadF32(Data, Off, IX);
         Off = ReadF32(Data, Off, IY);
         Off = ReadF32(Data, Off, IZ);

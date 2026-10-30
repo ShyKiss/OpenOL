@@ -31,7 +31,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <ExceptionHandling>false</ExceptionHandling>
       <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;_WINDOWS;_WINSOCK_DEPRECATED_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_LIB;_WINDOWS;_WINSOCK_DEPRECATED_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;OPENOL_EMBEDDED;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>Level3</WarningLevel>
       <!-- C4127: conditional expression is constant (relay packet macros) -->
       <!-- C4121: alignment sensitive to packing (not our structs here)   -->
@@ -50,6 +50,7 @@
     <ClInclude Include="include\relay_compat.h" />
     <ClInclude Include="include\db.h" />
     <ClInclude Include="include\server.h" />
+    <ClInclude Include="include\openol_protocol.h" />
     <ClInclude Include="include\openol_relay.h" />
   </ItemGroup>
   <ItemGroup>
