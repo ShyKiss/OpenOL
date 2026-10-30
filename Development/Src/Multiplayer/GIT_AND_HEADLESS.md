@@ -90,7 +90,12 @@ python3 Development/Src/Multiplayer/Tests/test_relay.py -v
 OLGame.exe server <map>?Game=...?ListenPort=7777 -log -nosteam -nohomedir
 ```
 
-См. `_startgameasserver.bat`, `Launch/Src/LaunchEngineLoop.cpp:2659`, `Engine/Src/UnEngine.cpp:5824`. NullRHI включается `-nullrhi` или токеном режима (`Engine/Src/DynamicRHI.cpp:60`), звук отключает `-nosound`. Результаты проверки — в разделе ниже.
+См. `_startgameasserver.bat`, `Launch/Src/LaunchEngineLoop.cpp:2659`, `Engine/Src/UnEngine.cpp:5824`. NullRHI включается `-nullrhi` или токеном режима (`Engine/Src/DynamicRHI.cpp:60`), звук отключает `-nosound`. Первая проверка (2026-10-30, Wine + Xvfb, `DLC_Intro_Persistent`, `-nosound -unattended -forcelogflush`):
+
+- Движок запустился в `NetMode 1` с NullRHI и классом игры `OLGame`, загрузил карту и потоковые уровни без критических ошибок.
+- Процесс проработал 100 с до принудительной остановки. RSS 572 МБ, после загрузки около 10% одного ядра.
+- `?ListenPort=` не подействовал: сокет занял порт 7777. Для нескольких комнат это нужно исправить.
+- Это карта меню: ботов, сюжетной карты и частоты тика проверка не покрывает. Лог заканчивается на 6-й секунде, поэтому работу цикла подтверждают только жизнь процесса и расход CPU.
 
 ### 5. Два клиента и сервер без окна
 
