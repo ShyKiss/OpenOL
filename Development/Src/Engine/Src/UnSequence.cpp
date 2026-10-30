@@ -7518,7 +7518,9 @@ void USeqAct_ActorFactory::Activated()
 		Factory != NULL)
 	{
 		// Observer-only: remote player triggered this factory; don't spawn on the local client.
-		if (bObserverOnly)
+		// In multiplayer enemy factories only ever spawn on the client running enemy AI.
+		extern UBOOL MpWorld_AllowFactorySpawn(UActorFactory*, UBOOL);
+		if (!MpWorld_AllowFactorySpawn(Factory, bObserverOnly))
 			return;
 		bIsSpawning = TRUE;
 		// reset all our transient properties

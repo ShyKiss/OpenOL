@@ -502,6 +502,75 @@ class RelayTest(unittest.TestCase):
         types = [d[1] for d in b.recv_all(0.2) if d[0] == P["CH_WORLD"]]
         self.assertEqual(types, [P["WORLD_PICKUP_STATE"], P["WORLD_ITEM_CONSUME"]])
 
+    def owner_of(self, client, timeout=0.3):
+        last = None
+        for d in client.recv_all(timeout):
+            if d[:2] == bytes([P["CH_SESS"], P["SESS_SIM_OWNER"]]):
+                last = struct.unpack_from("<I", d, 6)[0]
+        return last
+
+    def test_first_in_world_owns_enemy_ai(self):
+        a = self.client(enter=False)
+        a.enter()
+        self.assertEqual(self.owner_of(a), a.player_id)
+        b = self.client(enter=False)
+        self.assertEqual(self.owner_of(b), a.player_id, "known before b loads a map")
+        b.enter()
+        self.assertEqual(self.owner_of(b), a.player_id)
+
+    def test_enemies_only_from_owner(self):
+        a, b = self.client(), self.client()
+        name = b"Enemy_1"
+        b.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(name, b"S" * 20))
+        self.assertFalse([d for d in a.recv_all(0.15) if d[0] == P["CH_ENEMY"]])
+        a.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(name, b"S" * 20))
+        b.wait_for(lambda d: d[0] == P["CH_ENEMY"])
+        ev = struct.pack("<I", a.player_id) + b"\0" * 60
+        b.send(P["CH_HERO"], P["HERO_PLAYER_EVENT"], ev)
+        self.assertFalse([d for d in a.recv_all(0.15) if d[:2] == bytes([P["CH_HERO"], P["HERO_PLAYER_EVENT"]])])
+
+    def test_owner_disconnect_hands_over_and_forgets_enemies(self):
+        a, b = self.client(), self.client()
+        a.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(b"Enemy_2", b"S" * 20))
+        b.wait_for(lambda d: d[0] == P["CH_ENEMY"])
+        a.send(P["CH_WORLD"], P["WORLD_DISCONNECT"])
+        msgs = b.recv_all(0.3)
+        kinds = [(d[0], d[1]) for d in msgs]
+        owner_at = kinds.index((P["CH_SESS"], P["SESS_SIM_OWNER"]))
+        self.assertEqual(struct.unpack_from("<I", msgs[owner_at], 6)[0], b.player_id)
+        self.assertLess(owner_at, kinds.index((P["SRV_DISCONNECT"], 0)),
+                        "the new owner must get its dummies before they are removed")
+        c = self.client(enter=False)
+        c.enter()
+        self.assertFalse([d for d in c.recv_all(0.2) if d[0] == P["CH_ENEMY"]])
+
+    def test_owner_death_hands_over_but_other_death_does_not(self):
+        a, b = self.client(), self.client()
+        b.send(P["CH_HERO"], P["HERO_PLAYER_LIFECYCLE"], bytes([0]))
+        self.assertIsNone(self.owner_of(a, 0.15))
+        a.send(P["CH_HERO"], P["HERO_PLAYER_LIFECYCLE"], bytes([1]))
+        self.assertIsNone(self.owner_of(b, 0.15), "respawning changes nothing")
+        a.send(P["CH_HERO"], P["HERO_PLAYER_LIFECYCLE"], bytes([0]))
+        self.assertEqual(self.owner_of(b), b.player_id)
+
+    def test_owner_alone_keeps_ownership_when_dying(self):
+        a = self.client()
+        a.send(P["CH_HERO"], P["HERO_PLAYER_LIFECYCLE"], bytes([0]))
+        self.assertIsNone(self.owner_of(a, 0.15))
+
+    def test_owner_leave_hands_over(self):
+        a, b = self.client(), self.client()
+        a.send(P["CH_SESS"], P["SESS_LEAVE"])
+        self.assertEqual(self.owner_of(b), b.player_id)
+
+    def test_new_world_keeps_owner(self):
+        a, b = self.client(), self.client()
+        b.enter(cp="CP_B", persist="MapB", epoch=1, reset=True)
+        b.wait_for(sess("SESS_BASELINE_END"))
+        a.recv_all(0.1)
+        a.enter(cp="CP_B", persist="MapB", epoch=2)
+        self.assertEqual(self.owner_of(a), a.player_id)
+
     def test_claim_kinds_do_not_collide(self):
         a = self.client()
         self.claim(a, P["CLAIM_CSA"], "Map.X", 1)

@@ -181,6 +181,14 @@ static void HandleSessionPacket(AMultiplayerController* Controller, BYTE Type, B
         debugf(NAME_Log, TEXT("[MP] Baseline received"));
         GMpConn.bInBaseline = FALSE;
         break;
+    case SESS_SIM_OWNER:
+        if (PayloadLen >= 4)
+        {
+            extern void EnemyChannel_OnSimOwnerChanged(AMultiplayerController*, INT);
+            EnemyChannel_OnSimOwnerChanged(Controller,
+                (INT)((DWORD)Payload[0] | ((DWORD)Payload[1]<<8) | ((DWORD)Payload[2]<<16) | ((DWORD)Payload[3]<<24)));
+        }
+        break;
     case SESS_PLAYER_LEFT:
         if (PayloadLen >= 4)
             Controller->eventOnPlayerDisconnected((INT)((DWORD)Payload[0] | ((DWORD)Payload[1]<<8) | ((DWORD)Payload[2]<<16) | ((DWORD)Payload[3]<<24)));
@@ -342,6 +350,7 @@ void AMultiplayerController::OnConnected()
     GMpConn.SendBinary(B, N);
 
     GMpConn.WorldEpoch = 0;
+    GMpConn.SimOwnerID = 0;
     GMpConn.bSkipNextEnter = FALSE;
     if (GMultiplayerHero)
         SendSessionEnter(0, CurrentCheckpointName());

@@ -92,6 +92,7 @@ public:
 
     // World session. WorldEpoch is 0 until the server has placed us in a world.
     WORD    WorldEpoch;
+    INT     SimOwnerID;          // client running enemy AI; 0 until the server names one
     UBOOL   bInBaseline;         // between SESS_WORLD and SESS_BASELINE_END
     UBOOL   bTravelPending;      // SESS_TRAVEL received but no controller to apply it yet
     UBOOL   bSkipNextEnter;      // the checkpoint restart already reported the world
@@ -133,7 +134,7 @@ public:
         , SyncInteractable(TRUE), SyncEnemies(TRUE)
         , SyncMatinees(TRUE), SyncPickups(TRUE), SpeedrunMode(FALSE)
         , bHasSessionToken(FALSE)
-        , WorldEpoch(0), bInBaseline(FALSE), bTravelPending(FALSE), bSkipNextEnter(FALSE)
+        , WorldEpoch(0), SimOwnerID(0), bInBaseline(FALSE), bTravelPending(FALSE), bSkipNextEnter(FALSE)
         , OnlineCount(0), PingTimer(5.f)
         , bP2PMode(FALSE), HostSteamID(0)
         , bP2PColdLaunch(FALSE)
@@ -207,5 +208,11 @@ FORCEINLINE UBOOL CanSend()
 FORCEINLINE UBOOL CanReceive()
 {
     return GMpConn.bIsConnected;
+}
+// Single player, unsynced enemies and the AI owner all run enemies locally.
+FORCEINLINE UBOOL IsEnemyAuthority()
+{
+    return !GMpConn.bIsConnected || !GMpConn.SyncEnemies
+        || GMpConn.SimOwnerID == 0 || GMpConn.SimOwnerID == GMpConn.LocalPlayerID;
 }
 

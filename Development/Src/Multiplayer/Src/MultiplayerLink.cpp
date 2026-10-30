@@ -601,6 +601,7 @@ void GMpConn_LeaveSession()
     GMpConn.bP2PColdLaunch   = FALSE;
     GMpConn.bHasSessionToken = FALSE;
     GMpConn.WorldEpoch       = 0;
+    GMpConn.SimOwnerID       = 0;
     GMpConn.bTravelPending   = FALSE;
     GMpConn.bSkipNextEnter   = FALSE;
     GMpConn.TravelCheckpoint = TEXT("");

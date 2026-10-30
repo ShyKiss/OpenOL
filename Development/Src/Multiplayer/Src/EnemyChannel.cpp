@@ -85,6 +85,103 @@ static void CallPlayNetSMT(AOLEnemyPawn* E, INT S, INT P1, INT P2)         { E->
 static INT  CallGetDoorSMTFlags(AOLEnemyPawn* E)                            { return E->NativeGetDoorSMTFlags(); }
 
 // ============================================================================
+// Enemy AI authority
+// ============================================================================
+
+// Called from USeqAct_ActorFactory::Activated. Every way an enemy enters the world
+// (trigger, checkpoint start, end of a cutscene) goes through here, so one decision
+// covers them all. For enemy factories only the owner counts: a chain fired by another
+// player is observer-only here, and the owner must still spawn for everyone.
+UBOOL MpWorld_AllowFactorySpawn(UActorFactory* Factory, UBOOL bObserverOnly)
+{
+    if (GMpConn.bIsConnected && GMpConn.SyncEnemies && Factory && Factory->IsA(UActorFactoryOLAI::StaticClass()))
+        return IsEnemyAuthority();
+    return !bObserverOnly;
+}
+
+// Debug spawns from the Spawns tab and cheats are local to whoever asked for them.
+static const FName GCustomEnemyTag(TEXT("CustomEnemy"));
+
+// Catches enemies that appeared before this client learned it is not the owner.
+static void DestroyLocalEnemies(AMultiplayerController* Ctrl)
+{
+    static const FName DummyTag(TEXT("MultiplayerDummyEnemy"));
+    for (FActorIterator It; It; ++It)
+    {
+        AOLEnemyPawn* E = Cast<AOLEnemyPawn>(*It);
+        if (!E || E->bDeleteMe || E->bPendingDelete || E->Tag == DummyTag || E->Tag == GCustomEnemyTag)
+            continue;
+        if (E->Controller)
+            GWorld->DestroyActor(E->Controller);
+        GWorld->DestroyActor(E);
+    }
+    Ctrl->CachedEnemies.Empty();
+    Ctrl->LastEnemyAlive.Empty();
+    Ctrl->LastEnemySMT.Empty();
+    Ctrl->LastBashLoopSentTime.Empty();
+    Ctrl->SentEnemySpawns.Empty();
+}
+
+// Turns what this client sees into enemies it simulates. The behavior tree starts over,
+// which is enough: the point is that the world keeps going without the old owner.
+static void PromoteDummyEnemies(AMultiplayerController* Ctrl)
+{
+    for (INT i = 0; i < Ctrl->RemoteEnemies.Num(); i++)
+    {
+        AOLEnemyPawn* Dummy = Ctrl->RemoteEnemies(i).DummyEnemy;
+        if (!Dummy) continue;
+
+        AOLEnemyPawn* Real = Cast<AOLEnemyPawn>(GWorld->SpawnActor(Dummy->GetClass(), NAME_None,
+            Dummy->Location, Dummy->Rotation, NULL, TRUE, TRUE));
+        if (Real)
+        {
+            AOLBot* Bot = Cast<AOLBot>(GWorld->SpawnActor(AOLBot::StaticClass()));
+            if (Bot)
+            {
+                Bot->eventPossess(Real, FALSE);
+                Real->Modifiers.bShouldAttack = TRUE;
+                Real->Modifiers.bUseForMusic  = TRUE;
+                Real->Modifiers.WeaponToUse   = Dummy->CurrentWeapon;
+                Real->eventApplyModifiers(Real->Modifiers);
+                if (Dummy->NetMeshPath.Len() > 0)
+                    CallSetNetMesh(Real, Dummy->NetMeshPath);
+            }
+            else
+            {
+                GWorld->DestroyActor(Real);
+            }
+        }
+        GWorld->DestroyActor(Dummy);
+    }
+    Ctrl->RemoteEnemies.Empty();
+}
+
+void EnemyChannel_OnSimOwnerChanged(AMultiplayerController* Ctrl, INT NewOwner)
+{
+    const INT OldOwner = GMpConn.SimOwnerID;
+    GMpConn.SimOwnerID = NewOwner;
+    debugf(NAME_Log, TEXT("[MP] Enemy AI owner: %d (was %d, we are %d)"), NewOwner, OldOwner, GMpConn.LocalPlayerID);
+    if (OldOwner == NewOwner || !GMpConn.SyncEnemies)
+        return;
+
+    if (NewOwner == GMpConn.LocalPlayerID)
+    {
+        PromoteDummyEnemies(Ctrl);
+        return;
+    }
+    // Enemies of the previous owner are gone; the new owner announces its own.
+    for (INT j = Ctrl->RemoteEnemies.Num() - 1; j >= 0; j--)
+    {
+        if (Ctrl->RemoteEnemies(j).OwnerID != NewOwner)
+        {
+            if (Ctrl->RemoteEnemies(j).DummyEnemy)
+                GWorld->DestroyActor(Ctrl->RemoteEnemies(j).DummyEnemy);
+            Ctrl->RemoteEnemies.Remove(j, 1);
+        }
+    }
+}
+
+// ============================================================================
 // FindEnemyByName
 // ============================================================================
 
@@ -383,6 +480,14 @@ void UEnemyChannel::TickSend(FLOAT DeltaTime)
     if (!GMpConn.bIsConnected || !GMpConn.SyncEnemies || !HeroPawn)
         return;
 
+    if (!IsEnemyAuthority())
+    {
+        // A dying hero keeps its killer until the respawn: the death animation needs it.
+        if (HeroPawn->Health > 0)
+            DestroyLocalEnemies(ControllerOwner);
+        return;
+    }
+
     ControllerOwner->IndexEnemies();
 
     // Position rate must not depend on FPS.
@@ -456,18 +561,8 @@ void UEnemyChannel::TickSend(FLOAT DeltaTime)
 
 void UEnemyChannel::SendAllDeletes()
 {
-    if (!GMpConn.bIsConnected) return;
-    for (INT i = 0; i < ControllerOwner->CachedEnemies.Num(); i++)
-    {
-        AOLEnemyPawn* E = ControllerOwner->CachedEnemies(i);
-        if (!E) continue;
-        FString EName = E->GetName();
-        BYTE B[256]; INT N = 0;
-        N = PutU8(B, N, CH_ENEMY);
-        N = PutU8(B, N, ENEMY_DEL);
-        N = PutStr(B, N, EName);
-        GMpConn.SendBinary(B, N);
-    }
+    // Enemies belong to the world, not to a player: dying no longer removes them.
+    // Still called from MultiplayerController.uc; remove with the next script change.
 }
 
 // ============================================================================
