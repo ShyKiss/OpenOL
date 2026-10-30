@@ -6,6 +6,9 @@
 // Per-session delta state — reset when DoorChannel is re-created
 static AOLDoor*       GLastLockedDoor   = NULL;
 static AOLHidingSpot* GLastActiveLocker = NULL;
+// NetReplicateOpen/Close pass the local hero as instigator, so they fire the same
+// "local door" events as a real action. Without this the packet echoes between clients.
+static UBOOL GApplyingRemoteDoor = FALSE;
 
 // ============================================================================
 // Helpers
@@ -233,7 +236,7 @@ void UDoorChannel::TickSend(FLOAT DeltaTime)
 
 void UDoorChannel::OnLocalDoorOpen(AOLDoor* D)
 {
-    if (!D || !GMpConn.bIsConnected) return;
+    if (!D || !GMpConn.bIsConnected || GApplyingRemoteDoor) return;
     BYTE B[DOOR_OPEN_SIZE];
     INT  N = 0;
     N = PutU8 (B, N, CH_DOOR);
@@ -246,7 +249,7 @@ void UDoorChannel::OnLocalDoorOpen(AOLDoor* D)
 
 void UDoorChannel::OnLocalDoorClose(AOLDoor* D)
 {
-    if (!D || !GMpConn.bIsConnected) return;
+    if (!D || !GMpConn.bIsConnected || GApplyingRemoteDoor) return;
     BYTE B[DOOR_CLOSE_SIZE];
     INT  N = 0;
     N = PutU8 (B, N, CH_DOOR);
@@ -371,8 +374,11 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
         if ((D->DoorUser == NULL || (DummyUser && DummyUser->bIsDummyPawn))
             && (D->DoorState == DS_Idle || D->DoorState == DS_PlayerInteracting))
         {
+            GApplyingRemoteDoor = TRUE;
             D->bNetDrivenMove = TRUE;
             D->NetReplicateOpen(D->OpeningSpeed);
+            D->bNetDrivenMove = FALSE;
+            GApplyingRemoteDoor = FALSE;
         }
         break;
     }
@@ -388,8 +394,11 @@ void UDoorChannel::OnBinaryPacket(INT SenderID, BYTE PktType, BYTE* Data, INT Da
         if ((D->DoorUser == NULL || (DummyUser && DummyUser->bIsDummyPawn))
             && (D->DoorState == DS_Idle || D->DoorState == DS_PlayerInteracting))
         {
+            GApplyingRemoteDoor = TRUE;
             D->bNetDrivenMove = TRUE;
             D->NetReplicateClose(D->ClosingSpeed);
+            D->bNetDrivenMove = FALSE;
+            GApplyingRemoteDoor = FALSE;
         }
         break;
     }

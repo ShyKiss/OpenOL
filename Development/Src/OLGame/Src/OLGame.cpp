@@ -169,6 +169,15 @@ void AOLGame::BeginDestroy()
 
 void AOLGame::OnTravelToStartupMap()
 {
+	extern void GMpConn_LeaveSession();
+	GMpConn_LeaveSession();
+
+	// "open" inherits the options of the previous URL, so the menu would otherwise
+	// load as the multiplayer game again.
+	UGameEngine* GameEngine = Cast<UGameEngine>(GEngine);
+	if (GameEngine)
+		GameEngine->LastURL.RemoveOption(TEXT("game"));
+
 #if DINGO
 	if (GOLDingo)
 	{

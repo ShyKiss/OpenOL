@@ -586,6 +586,33 @@ void GMpConn_ConnectLocal(WORD Port)
     GMpConn.Connect();
 }
 
+// Leaving to the main menu ends the multiplayer session completely: otherwise the
+// next map would reconnect and the server would send the player back to the world.
+void GMpConn_LeaveSession()
+{
+    if (GP2PBridgeClient.IsRunning())
+        GP2PBridgeClient.StopBridge();
+
+    GMpConn.Disconnect();
+    GMpConn.CancelConnect();
+
+    GMpConn.bHostMode        = FALSE;
+    GMpConn.bP2PMode         = FALSE;
+    GMpConn.bP2PColdLaunch   = FALSE;
+    GMpConn.bHasSessionToken = FALSE;
+    GMpConn.WorldEpoch       = 0;
+    GMpConn.bTravelPending   = FALSE;
+    GMpConn.bSkipNextEnter   = FALSE;
+    GMpConn.TravelCheckpoint = TEXT("");
+    GMpConn.TravelPersist    = TEXT("");
+    GMpConn.LastReportedCheckpoint = TEXT("");
+    GMpConn.OnlineCount      = 0;
+    GMpConn.KnownPlayers.Empty();
+
+    if (GRelayThread.IsRunning())
+        GRelayThread.StopRelay();
+}
+
 UBOOL GMpConn_IsConnected()
 {
     return GMpConn.bIsConnected;
