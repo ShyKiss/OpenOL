@@ -4,7 +4,7 @@
 set -e
 
 # ---- Configure before use ------------------------------------------------
-WINEPREFIX="/mnt/ext41/OL1Compile"
+WINEPREFIX="${OL1_WINEPREFIX:-/mnt/ext41/OL1Compile}"
 COOK_SHIPPINGDIR="Z:/mnt/ntfs2/SteamAPP/steamapps/common/Outlast/OLGame/CookedPCConsole"
 COOK_ARGS="-platform=PCConsole -multilanguagecook=INT -modcook -full -MODTEXINPKG"
 # --------------------------------------------------------------------------

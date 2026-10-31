@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <tchar.h>
 #include <string.h>
+#include <limits.h>
 
 #include <windows.h>
 #include <wininet.h>

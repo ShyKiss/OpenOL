@@ -4,10 +4,17 @@ name: Build Mod
 
 on:
   workflow_dispatch:
+    inputs:
+      create_draft:
+        description: "Upload the archives as a draft release of the version in Version.h"
+        type: boolean
+        default: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Install Podman
@@ -19,6 +26,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: true
+          fetch-depth: 0
 
       - name: Download OutlastSrc
         run: wget "${{ secrets.OUTLASTSRC }}"
@@ -30,13 +38,27 @@ jobs:
       - name: Extract binaries from image
         run: |
           id=$(podman create localhost/openol)
-          podman cp "$id":/build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/PublishTemp/OpenOL.7z ./OpenOL.7z
+          mkdir -p dist
+          podman cp "$id":/build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/PublishTemp/OpenOL.7z dist/OpenOL.7z
+          podman cp "$id":/build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/PublishTemp/OpenOL.zip dist/OpenOL.zip
           podman rm "$id"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: OpenOL
-          path: |
-            OpenOL.7z
+          path: dist/
           archive: false
+
+      # Never publishes: making a release public stays a manual "release.sh publish".
+      - name: Upload draft release
+        if: inputs.create_draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y wine32:i386 wine mingw-w64 p7zip-full
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          Development/Src/Targets/release.sh upload-draft dist

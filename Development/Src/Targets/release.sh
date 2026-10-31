@@ -1,12 +1,17 @@
 #!/bin/bash
 # Release flow for OpenOL. The version lives in OutlastLauncher/Version.h.
 #
-#   release.sh bump patch|minor|major|X.Y.Z   raise the version and commit (on a work branch)
+#   release.sh bump patch|minor|major [--rc]  raise the version and commit (on a work branch)
+#   release.sh bump rc|final|X.Y.Z[-rcN]      next release candidate, or the final version of the current one
 #   release.sh --dry-run [--skip-build]       run all checks, build and verify; change nothing remotely
-#   release.sh draft                          on main: build, verify, push the tag, upload a draft release
-#   release.sh publish                        make the draft public: all users are offered it from now on
+#   release.sh draft                          build, verify, push the tag, upload a draft release
+#   release.sh publish                        make the draft public
+#   release.sh build-archives                 build and package only (for CI, needs no git)
+#   release.sh upload-draft <dir>             verify the archives in <dir> and upload a draft (for CI)
 #
 # The usual order: bump on a work branch, merge to main, dry-run, draft, try the draft, publish.
+# A release candidate (X.Y.Z-rcN) can be drafted from any pushed branch. It is published as a
+# prerelease, so only people who installed a candidate by hand are offered newer ones.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -34,40 +39,71 @@ problem() {
     if (( DRY_RUN )); then echo "WOULD BLOCK A RELEASE: $*" >&2; else echo "ERROR: $*" >&2; fi
 }
 
+VERSION_RE='^([0-9]+)\.([0-9]+)\.([0-9]+)(-rc([0-9]+))?$'
+
 read_version() {
     sed -n 's/^#define OPENOL_VERSION_STR "\(.*\)"/\1/p' "$VERSION_H"
 }
 
 write_version() {  # $1 = X.Y.Z
-    local major minor patch
-    IFS=. read -r major minor patch <<< "$1"
-    sed -i -e "s/^#define OPENOL_VERSION_NUM .*/#define OPENOL_VERSION_NUM $major,$minor,$patch,0/" \
+    [[ "$1" =~ $VERSION_RE ]] || die "Not a version: $1"
+    local num="${BASH_REMATCH[1]},${BASH_REMATCH[2]},${BASH_REMATCH[3]},${BASH_REMATCH[5]:-0}"
+    sed -i -e "s/^#define OPENOL_VERSION_NUM .*/#define OPENOL_VERSION_NUM $num/" \
            -e "s/^#define OPENOL_VERSION_STR .*/#define OPENOL_VERSION_STR \"$1\"/" \
            -e "s/^#define CURRENT_VERSION .*/#define CURRENT_VERSION L\"$1\"/" "$VERSION_H"
 }
 
+is_rc() { [[ "$1" == *-rc* ]]; }
+
+# Sortable form of a version. A final version sorts above its own release candidates,
+# which is why plain "sort -V" cannot be used.
+version_key() {
+    [[ "$1" =~ $VERSION_RE ]] || die "Not a version: $1"
+    printf '%06d%06d%06d%06d' "$((10#${BASH_REMATCH[1]}))" "$((10#${BASH_REMATCH[2]}))" \
+        "$((10#${BASH_REMATCH[3]}))" "$((10#${BASH_REMATCH[5]:-999999}))"
+}
+
 # Succeeds if $1 is strictly higher than $2.
 version_gt() {
-    [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$1" ]]
+    [[ "$(version_key "$1")" > "$(version_key "$2")" ]]
 }
 
 latest_tag() {
-    git tag | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true
+    local tag best=""
+    for tag in $(git tag); do
+        [[ "${tag#v}" =~ $VERSION_RE ]] || continue
+        if [[ -z "$best" ]] || version_gt "${tag#v}" "${best#v}"; then best="$tag"; fi
+    done
+    echo "$best"
 }
 
-cmd_bump() {  # $1 = patch|minor|major|X.Y.Z
-    local current next major minor patch
+cmd_bump() {  # $1 = patch|minor|major|rc|final|X.Y.Z[-rcN], $2 = --rc
+    local current next major minor patch rc
     current="$(read_version)"
-    IFS=. read -r major minor patch <<< "$current"
+    [[ "$current" =~ $VERSION_RE ]] || die "Bad version in Version.h: $current"
+    major="${BASH_REMATCH[1]}"; minor="${BASH_REMATCH[2]}"; patch="${BASH_REMATCH[3]}"; rc="${BASH_REMATCH[5]}"
+
     case "${1:-}" in
         patch) next="$major.$minor.$((patch + 1))" ;;
         minor) next="$major.$((minor + 1)).0" ;;
         major) next="$((major + 1)).0.0" ;;
-        [0-9]*.[0-9]*.[0-9]*)
-            [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Not a version: $1"
+        rc)
+            [[ -n "$rc" ]] || die "$current is not a release candidate. Start one with: bump patch|minor|major --rc"
+            next="$major.$minor.$patch-rc$((rc + 1))" ;;
+        final)
+            [[ -n "$rc" ]] || die "$current is already final."
+            next="$major.$minor.$patch" ;;
+        [0-9]*)
+            [[ "$1" =~ $VERSION_RE ]] || die "Not a version: $1"
             next="$1" ;;
-        *) die "Usage: release.sh bump patch|minor|major|X.Y.Z" ;;
+        *) die "Usage: release.sh bump patch|minor|major [--rc] | rc | final | X.Y.Z[-rcN]" ;;
     esac
+    if [[ "${2:-}" == "--rc" ]]; then
+        case "$1" in
+            patch|minor|major) next="$next-rc1" ;;
+            *) die "--rc only goes with patch, minor or major." ;;
+        esac
+    fi
 
     version_gt "$next" "$current" || die "$next is not higher than the current $current"
     [[ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]] || die "On main: bump on a work branch, then merge it."
@@ -94,9 +130,12 @@ preflight() {  # $1 = version
     git fetch -q --tags origin || problem "Cannot fetch from origin"
     git -C "$RELAY" fetch -q --tags origin || problem "Cannot fetch the relay from origin"
 
-    [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]] || problem "Not on main: $(git rev-parse --abbrev-ref HEAD)"
+    # A final release comes from main. A release candidate may come from any branch.
+    local branch
+    branch="$(git rev-parse --abbrev-ref HEAD)"
+    is_rc "$version" || [[ "$branch" == "main" ]] || problem "Not on main: $branch"
     [[ -z "$(git status --porcelain)" ]] || problem "Working tree has uncommitted changes"
-    [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || problem "HEAD is not origin/main: the tag must point at a pushed commit"
+    [[ "$(git rev-parse HEAD)" == "$(git rev-parse -q --verify "origin/$branch" || true)" ]] || problem "HEAD is not origin/$branch: the tag must point at a pushed commit"
 
     tag_commit="$(git rev-parse -q --verify "refs/tags/$version^{commit}" || true)"
     newest="$(latest_tag)"
@@ -193,17 +232,40 @@ cmd_dry_run() {  # $1 = 1 to skip the build
     echo "No problems. Next: release.sh draft"
 }
 
+release_state() {  # $1 = version; prints true for a draft, false if public, nothing if absent
+    gh release view "$1" -R "$REPO" --json isDraft --jq .isDraft 2>/dev/null || true
+}
+
 cmd_draft() {
-    local version state tmp asset
+    local version state
     version="$(read_version)"
     preflight "$version"
 
-    state="$(gh release view "$version" -R "$REPO" --json isDraft --jq .isDraft 2>/dev/null || true)"
+    state="$(release_state "$version")"
     [[ "$state" != "false" ]] || die "Release $version is already public. Run: release.sh bump"
 
     build_all
     make_archives
     verify_archives "$PUBLISH_DIR" "$version"
+    upload_draft "$version" "$PUBLISH_DIR"
+}
+
+# For CI, where the archives come out of the build container.
+cmd_upload_draft() {  # $1 = folder with the archives
+    local version
+    [[ -d "${1:-}" ]] || die "Usage: release.sh upload-draft <dir>"
+    version="$(read_version)"
+    [[ "$(release_state "$version")" != "false" ]] || die "Release $version is already public."
+    verify_archives "$1" "$version"
+    upload_draft "$version" "$1"
+}
+
+upload_draft() {  # $1 = version, $2 = folder with the archives
+    local version="$1" dir="$2" state tmp asset
+    local kind=() files=()
+    if is_rc "$version"; then kind=(--prerelease); fi
+    for asset in "${ASSETS[@]}"; do files+=("$dir/$asset"); done
+    state="$(release_state "$version")"
 
     step "Tag and draft release $version"
     if ! git rev-parse -q --verify "refs/tags/$version" > /dev/null; then
@@ -212,17 +274,17 @@ cmd_draft() {
     git push -q origin "refs/tags/$version"
 
     if [[ "$state" == "true" ]]; then
-        gh release upload "$version" -R "$REPO" --clobber "${ASSETS[@]/#/$PUBLISH_DIR/}"
+        gh release upload "$version" -R "$REPO" --clobber "${files[@]}"
     else
-        gh release create "$version" -R "$REPO" --draft --verify-tag --generate-notes \
-            --title "v$version" "${ASSETS[@]/#/$PUBLISH_DIR/}"
+        gh release create "$version" -R "$REPO" --draft --verify-tag --generate-notes "${kind[@]}" \
+            --title "v$version" "${files[@]}"
     fi
 
     # What matters is what GitHub stored, not what was sent.
     tmp="$(mktemp -d)"
     download_assets "$version" "$tmp"
     for asset in "${ASSETS[@]}"; do
-        cmp "$PUBLISH_DIR/$asset" "$tmp/$asset" || die "$asset on GitHub differs from the local file"
+        cmp "$dir/$asset" "$tmp/$asset" || die "$asset on GitHub differs from the local file"
     done
     rm -f "$tmp/OpenOL.zip" "$tmp/OpenOL.7z"
     rmdir "$tmp"
@@ -236,7 +298,7 @@ cmd_publish() {
     local version state tmp latest digest answer
     version="$(read_version)"
 
-    state="$(gh release view "$version" -R "$REPO" --json isDraft --jq .isDraft 2>/dev/null || true)"
+    state="$(release_state "$version")"
     [[ "$state" == "true" ]] || die "No draft release for $version. Run: release.sh draft"
 
     # Check the uploaded files themselves: the local ones may be from another build by now.
@@ -245,8 +307,13 @@ cmd_publish() {
     verify_archives "$tmp" "$version"
 
     echo ""
-    echo "This offers $version to every user of the launcher. It cannot be taken back from"
-    echo "those who have installed it: only a higher version can replace it."
+    if is_rc "$version"; then
+        echo "This publishes $version as a prerelease. Regular users are not offered it,"
+        echo "only those already on a release candidate."
+    else
+        echo "This offers $version to every user of the launcher. It cannot be taken back from"
+        echo "those who have installed it: only a higher version can replace it."
+    fi
     printf 'Type %s to publish: ' "$version"
     read -r answer
     if [[ "$answer" != "$version" ]]; then
@@ -255,17 +322,25 @@ cmd_publish() {
         die "Not published."
     fi
 
-    gh release edit "$version" -R "$REPO" --draft=false --latest > /dev/null
+    if is_rc "$version"; then
+        gh release edit "$version" -R "$REPO" --draft=false --prerelease --latest=false > /dev/null
+    else
+        gh release edit "$version" -R "$REPO" --draft=false --prerelease=false --latest > /dev/null
+    fi
 
     # The launcher requires this exact state: without a digest it refuses the update.
     latest="$(gh api "repos/$REPO/releases/latest" --jq .tag_name)"
-    digest="$(gh api "repos/$REPO/releases/latest" --jq '.assets[] | select(.name == "OpenOL.zip") | .digest')"
+    digest="$(gh api "repos/$REPO/releases/tags/$version" --jq '.assets[] | select(.name == "OpenOL.zip") | .digest')"
     local local_digest
     local_digest="sha256:$(sha256sum "$tmp/OpenOL.zip" | cut -d' ' -f1)"
     rm -f "$tmp/OpenOL.zip" "$tmp/OpenOL.7z"
     rmdir "$tmp"
 
-    [[ "$latest" == "$version" ]] || die "Published, but the latest release is $latest, not $version"
+    if is_rc "$version"; then
+        [[ "$latest" != "$version" ]] || die "$version was published as the latest release: regular users are being offered it!"
+    else
+        [[ "$latest" == "$version" ]] || die "Published, but the latest release is $latest, not $version"
+    fi
     [[ "$digest" == "$local_digest" ]] || die "Published, but the digest on GitHub is '$digest', expected $local_digest. Launchers will refuse this update."
 
     step "Published $version"
@@ -274,7 +349,9 @@ cmd_publish() {
 
 BUILD_LOGS="$(mktemp -d)"
 case "${1:-}" in
-    bump)      shift; cmd_bump "${1:-}" ;;
+    bump)      shift; cmd_bump "${1:-}" "${2:-}" ;;
+    build-archives) build_all; make_archives ;;
+    upload-draft)   shift; cmd_upload_draft "${1:-}" ;;
     draft)     cmd_draft ;;
     publish)   cmd_publish ;;
     --dry-run)
@@ -282,5 +359,5 @@ case "${1:-}" in
         [[ "${2:-}" == "--skip-build" ]] && SKIP=1
         cmd_dry_run "$SKIP"
         ;;
-    *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

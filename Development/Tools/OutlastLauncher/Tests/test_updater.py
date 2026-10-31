@@ -411,10 +411,35 @@ def test_parse(h, base):
     rc, out = run(None, json.dumps(rel).encode()[:200])
     check("cut-off-json", rc == 1, out)
 
+    print("release list")
+
+    def release(tag, **kw):
+        return dict({"tag_name": tag, "prerelease": "rc" in tag, "assets": [asset("OpenOL.zip")]}, **kw)
+
+    def run_list(items):
+        with open(p, "wb") as f:
+            f.write(json.dumps(items).encode())
+        rc, out = h.run("parse-list", winpath(p))
+        return rc, out.split()[0] if out else ""
+
+    rc, out = run_list([release("2.2.0-rc1"), release("2.2.0-rc2"), release("2.1.0")])
+    check("newest candidate", rc == 0 and out == "2.2.0-rc2", out)
+    rc, out = run_list([release("2.2.0-rc2"), release("2.2.0"), release("2.1.0")])
+    check("final beats its candidates", rc == 0 and out == "2.2.0", out)
+    rc, out = run_list([release("2.3.0-rc1", assets=[]), release("2.2.0")])
+    check("skips a release without assets", rc == 0 and out == "2.2.0", out)
+    rc, out = run_list([])
+    check("empty list", rc == 1, out)
+    rc, out = run_list({"message": "API rate limit exceeded"})
+    check("rate-limit reply", rc == 1, out)
+
     print("versions")
     for a, b, want_newer in (("2.1.1", "2.1.0", True), ("v2.2.0", "2.1.9", True), ("3.0.0", "2.9.9", True),
                              ("2.1.0", "2.1.0", False), ("2.0.9", "2.1.0", False), ("2.10.0", "2.9.0", True),
-                             ("garbage", "2.1.0", False)):
+                             ("garbage", "2.1.0", False),
+                             ("2.2.0", "2.2.0-rc1", True), ("2.2.0-rc1", "2.2.0", False), ("2.2.0-rc2", "2.2.0-rc1", True),
+                             ("2.2.0-rc10", "2.2.0-rc9", True), ("2.2.0-rc1", "2.1.0", True), ("2.1.0", "2.2.0-rc1", False),
+                             ("2.2.0-rc1", "2.2.0-rc1", False)):
         rc, _ = h.run("newer", a, b)
         check(f"{a} > {b} is {want_newer}", (rc == 0) == want_newer)
 

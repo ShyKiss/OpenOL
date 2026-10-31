@@ -6,6 +6,7 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV WINEPREFIX="/home/builder/.local/share/prefixes/OL1Compile"
+ENV OL1_WINEPREFIX="/home/builder/.local/share/prefixes/OL1Compile"
 #ENV WINEDEBUG=fixme-all # Uncomment once tested
 ENV WINEDLLOVERRIDES="winemenubuilder.exe=d"
 ENV XDG_RUNTIME_DIR=/build/xdg
@@ -80,8 +81,9 @@ RUN 7z x /build/Outlast1.7z \
 WORKDIR /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/
 
 # Copy repo files
-COPY --chown=builder:builder Development/ /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/
-COPY --chown=builder:builder OLGame/ /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/
+COPY --chown=builder:builder Development/ /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/
+COPY --chown=builder:builder OLGame/ /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/OLGame/
+COPY --chown=builder:builder Binaries/ /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Binaries/
 
 # Prepare wineprefix
 RUN mkdir -p $WINEPREFIX
@@ -117,12 +119,7 @@ RUN wlheadless-run -c cage -- wine DXSDK_Jun10.exe /U
 
 RUN chmod +x /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/*.sh
 
-RUN /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/build_wine.sh 1 \
-    && /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/build_wine.sh 2 \
-    && /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/build_wine.sh 3 \
-    && /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/build_wine.sh 5 \
-    && /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/build_wine.sh 6 \
-    && /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/build_wine.sh 8 \
-    && /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/publish.sh
+RUN /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/build_wine.sh 6 \
+    && /build/DATA/D/Perforce_Server1/outlast/UnrealEngine3/Development/Src/Targets/release.sh build-archives
 
 CMD ["/bin/bash"]

@@ -85,6 +85,20 @@ The launcher only accepts a release that has an asset named exactly `OpenOL.zip`
 
 A published version cannot be taken back from those who installed it, only replaced by a higher one. The update never deletes files, so a file removed from a release stays in existing installs.
 
+### Release candidates
+
+Versions like `2.2.0-rc1` are published as GitHub prereleases. They sort below `2.2.0`, so a tester on a candidate is offered the final version when it comes out. Regular users are never offered a candidate. A tester installs the first candidate by hand, and the launcher then offers newer candidates too. A candidate can be drafted from any pushed branch.
+
+```bash
+release.sh bump minor --rc   # 2.1.0 -> 2.2.0-rc1
+release.sh bump rc           # 2.2.0-rc1 -> 2.2.0-rc2
+release.sh bump final        # 2.2.0-rc2 -> 2.2.0
+```
+
+### CI
+
+The `Build Mod` workflow in [build.yml](../.github/workflows/build.yml) runs only when started by hand. It builds the archives in [CI/Containerfile](../CI/Containerfile) and, with `create_draft` enabled, uploads them as a draft through `release.sh upload-draft`. It never publishes: run `release.sh publish` after trying the draft. Bump the version and push before starting it. **This workflow has not been run yet, so expect to debug it on first use.** The local `release.sh draft` does not need it.
+
 Launcher 2.1.0 cannot install updates under Proton, because its unpacking relies on a Windows Shell feature that Wine does not have. Proton users on 2.1.0 have to install the next release by hand once.
 
 The tests run under Wine or Proton, and use mingw-w64 instead of MSVC:

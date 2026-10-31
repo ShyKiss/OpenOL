@@ -26,6 +26,7 @@
 
 #ifndef RELEASE_API_URL
 #define RELEASE_API_URL   L"https://api.github.com/repos/" GITHUB_REPO_PATH L"/releases/latest"
+#define RELEASE_LIST_URL  L"https://api.github.com/repos/" GITHUB_REPO_PATH L"/releases?per_page=30"
 #define DOWNLOAD_PREFIX   L"https://github.com/" GITHUB_REPO_PATH L"/releases/download/"
 #endif
 #define USER_AGENT        L"OutlastLauncher/" CURRENT_VERSION
@@ -519,23 +520,63 @@ static bool ParseRelease(const char* json, const char* end, UpdateInfo* info)
 
 // ---- Version comparison ----------------------------------------------------
 
-// Parse "1.2.3" or "v1.2.3" into major/minor/patch integers.
-static void ParseVersion(const WCHAR* s, int* major, int* minor, int* patch)
+// Parse "1.2.3", "v1.2.3" or "1.2.3-rc4". A final version gets the highest |rc|,
+// because it is newer than its own release candidates.
+static void ParseVersion(const WCHAR* s, int* major, int* minor, int* patch, int* rc)
 {
     if (*s == L'v' || *s == L'V') s++;
-    *major = *minor = *patch = 0;
-    swscanf(s, L"%d.%d.%d", major, minor, patch);
+    *major = *minor = *patch = *rc = 0;
+    if (swscanf(s, L"%d.%d.%d-rc%d", major, minor, patch, rc) < 4)
+        *rc = INT_MAX;
+}
+
+static bool IsReleaseCandidate(const WCHAR* version)
+{
+    return wcsstr(version, L"-rc") != NULL;
 }
 
 // Returns TRUE if |a| is strictly newer than |b|.
 static BOOL VersionNewer(const WCHAR* a, const WCHAR* b)
 {
-    int ma, na, pa, mb, nb, pb;
-    ParseVersion(a, &ma, &na, &pa);
-    ParseVersion(b, &mb, &nb, &pb);
+    int ma, na, pa, ra, mb, nb, pb, rb;
+    ParseVersion(a, &ma, &na, &pa, &ra);
+    ParseVersion(b, &mb, &nb, &pb, &rb);
     if (ma != mb) return ma > mb;
     if (na != nb) return na > nb;
-    return pa > pb;
+    if (pa != pb) return pa > pb;
+    return ra > rb;
+}
+
+// Picks the newest usable release from a GitHub release list. Entries that fail
+// ParseRelease are skipped: an old or unfinished release must not hide a good one.
+static bool ParseReleaseList(const char* json, const char* end, UpdateInfo* best)
+{
+    const char* p = JsonSkipWs(json, end);
+    if (!p || p >= end || *p != '[')
+    {
+        SetError(L"Server did not return a release list.");
+        return false;
+    }
+
+    bool found = false;
+    for (p++; ; p++)
+    {
+        p = JsonSkipWs(p, end);
+        if (!p || p >= end || *p != '{') break;
+
+        UpdateInfo info;
+        if (ParseRelease(p, end, &info) && (!found || VersionNewer(info.tag, best->tag)))
+        {
+            *best = info;
+            found = true;
+        }
+
+        p = JsonSkipWs(JsonSkipValue(p, end), end);
+        if (!p || p >= end || *p != ',') break;
+    }
+
+    if (!found) SetError(L"No usable release found.");
+    return found;
 }
 
 // ---- Download --------------------------------------------------------------
@@ -1532,11 +1573,18 @@ static DWORD WINAPI CheckThread(LPVOID param)
 {
     CheckJob* job = (CheckJob*)param;
 
+    // GitHub's "latest" never returns a prerelease. So stable builds are only ever offered
+    // stable releases, while a release candidate also follows newer release candidates.
+    const bool followCandidates = IsReleaseCandidate(CURRENT_VERSION);
+
     std::vector<char> response;
-    if (!HttpGetText(RELEASE_API_URL, L"Accept: application/vnd.github+json\r\n", response) || response.empty())
+    if (!HttpGetText(followCandidates ? RELEASE_LIST_URL : RELEASE_API_URL,
+                     L"Accept: application/vnd.github+json\r\n", response) || response.empty())
         return 0;
 
-    job->found = ParseRelease(&response[0], &response[0] + response.size(), &job->info);
+    const char* json = &response[0];
+    const char* end  = json + response.size();
+    job->found = followCandidates ? ParseReleaseList(json, end, &job->info) : ParseRelease(json, end, &job->info);
     return 0;
 }
 

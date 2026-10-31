@@ -89,6 +89,21 @@ int wmain(int argc, WCHAR* argv[])
         return Finish(true);
     }
 
+    // parse-list <json file>: prints the release that would be offered to a release candidate.
+    if (wcscmp(cmd, L"parse-list") == 0 && argc == 3)
+    {
+        FILE* f = _wfopen(argv[2], L"rb");
+        if (!f) return 2;
+        std::vector<char> json(MAX_JSON_SIZE);
+        size_t len = fread(&json[0], 1, json.size(), f);
+        fclose(f);
+
+        static UpdateInfo info;
+        if (!ParseReleaseList(&json[0], &json[0] + len, &info)) return Finish(false);
+        wprintf(L"%s\n", info.tag);
+        return Finish(true);
+    }
+
     // newer <a> <b>
     if (wcscmp(cmd, L"newer") == 0 && argc == 4)
     {
