@@ -54,12 +54,25 @@ The resulting `OLGame.exe`, along with `Core.upk`, `Engine.upk`, `OLGame.upk`, o
 
 ## Multiplayer: Server & Client
 
+The relay source is the [OpenOL-Relay](https://github.com/ShyKiss/OpenOL-Relay) repository, included as a git submodule at `Development/Src/Multiplayer/server`. Building `OLGame.exe` needs it, because the embedded relay is compiled from the same code:
+
+```sh
+git clone --recursive https://github.com/ShyKiss/OpenOL.git
+
+# Already cloned without it, or after pulling a newer version:
+git submodule update --init
+```
+
+To only host a server (for example on a VPS), clone OpenOL-Relay on its own: it doesn't need the game sources.
+
 OpenOL supports two ways to host a game:
 
 - **Embedded relay** — host from inside the game: open **Multiplayer -> Start Server**. Clients connect via Steam P2P — no open ports or public IP needed. Room code: `DEFAULT`.
 - **Standalone relay** — run `OpenOL_Relay` (TUI) or `OpenOL_Relay_GUI` (GUI) on any machine with a reachable IP. Clients connect directly over UDP. Default room code: `PUBLIC`.
 
 To connect to an embedded relay, the host invites friends via Steam — the client accepts the invite and joins automatically. To connect to a standalone relay, use **Multiplayer -> Connect** with the server IP:port and room code.
+
+All traffic is encrypted. Everyone needs the same version of the game and the relay: older versions cannot connect.
 
 -> [Full server & client guide](./docs/MULTIPLAYER.md)
 
