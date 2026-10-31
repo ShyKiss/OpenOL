@@ -1,0 +1,26 @@
+; Example TAS script.
+; Lines are either:
+;   forward strafe turn lookup [shift] [ctrl] [jump]
+;     - first 4 fields required; Turn/LookUp are rotator units, not degrees
+;     - optional trailing tokens, any subset/order: "shift" sets bWantToRun (sprint),
+;       "ctrl" sets bWantsToCrouch (crouch) for this tick, "jump" fires a one-shot jump
+;     - consumes one movement tick
+;   wait N        (hold the last movement frame's axes+modifiers for N more ticks;
+;                   never repeats jump)
+;   maxfps N      (set FPS cap immediately, doesn't consume a tick)
+; A "maxfps 62" is applied automatically before the first frame regardless of what's below.
+; On completion, TAS input/modifiers are cleared and the game unpauses automatically.
+
+; walk forward, held for 5 ticks total via wait
+1.0 0.0 0.0 0.0
+wait 4
+
+; jump on this tick while still moving forward
+1.0 0.0 0.0 0.0 jump
+
+; turn ~90 degrees in one tick (16384 rotator units)
+0.0 0.0 16384 0.0
+
+; sprint (shift) forward again in the new direction
+1.0 0.0 0.0 0.0 shift
+wait 2

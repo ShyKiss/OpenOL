@@ -26,6 +26,33 @@
 !/Development/Src/Multiplayer/*.md
 /Development/Src/Multiplayer/ARCHITECTURE*.md
 !/Development/Src/Multiplayer/server
+!/Development/Src/TASGame/
+!/Development/Src/Targets/
+/Development/Src/Targets/*
+!/Development/Src/Targets/*.sh
+!/Development/Src/Targets/*.py
+!/Development/External/
+/Development/External/*
+!/Development/External/imgui/
+/Development/External/imgui/.vs/
+/Development/External/imgui/obj/
+/Development/External/imgui/lib/
+!/Development/External/openol_relay/
+/Development/External/openol_relay/.vs/
+/Development/External/openol_relay/obj/
+/Development/External/openol_relay/lib/
+# Only our part of the browser: the rest is the CEF distribution and build output.
+!/Development/External/openol_browser/
+/Development/External/openol_browser/*
+!/Development/External/openol_browser/src/
+!/Development/External/openol_browser/OpenOL_Browser.vcxproj
+!/Binaries/
+/Binaries/*
+!/Binaries/Win64/
+/Binaries/Win64/*
+!/Binaries/Win64/OpenOL/
+/Binaries/Win64/OpenOL/settings.ini
+*.vcxproj.user
 
 *.exe
 *.u

@@ -42,7 +42,7 @@ The resulting `OLGame.exe`, along with `Core.upk`, `Engine.upk`, `OLGame.upk`, o
 
 ### Debug/Developer Menu
 
-- Press **F6** in-game to open the ImGui overlay menu (player stats, camera, visuals, scene inspector, etc.)
+- Press **Tilde (~)** in-game to open the ImGui overlay menu (player stats, camera, visuals, scene inspector, etc.)
 - The toggle key can be rebound inside the menu under **System**
 
 ### Fixes and New Features:
