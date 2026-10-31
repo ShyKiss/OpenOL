@@ -10,6 +10,11 @@
 
 set -e
 
+# --strict: a missing file is an error, for archives that go to users.
+STRICT=0
+[ "$1" = "--strict" ] && STRICT=1
+MISSING_COUNT=0
+
 OL1="$(cd "$(dirname "$0")/../../.." && pwd)"
 DEST="$OL1/PublishTemp"
 ARCHIVE="$DEST/OpenOL.7z"
@@ -62,6 +67,9 @@ declare -a MAPPINGS=(
 
     # Checkpoint thumbnails (DDS)
     "Binaries/Win64/OpenOL/res/checkpoints/|Binaries/Win64/OpenOL/res/checkpoints/"
+
+    # Hub tiles (Spawns tab)
+    "Binaries/Win64/OpenOL/res/tiles/|Binaries/Win64/OpenOL/res/tiles/"
 )
 
 echo "Publishing to $DEST ..."
@@ -78,6 +86,7 @@ for entry in "${MAPPINGS[@]}"; do
     if [[ "$src_rel" == */ ]]; then
         if [ ! -d "$src" ]; then
             echo "  MISSING DIR: $src_rel"
+            MISSING_COUNT=$((MISSING_COUNT + 1))
             continue
         fi
         mkdir -p "$dst"
@@ -93,6 +102,7 @@ for entry in "${MAPPINGS[@]}"; do
 
     if [ ! -f "$src" ]; then
         echo "  MISSING: $src_rel"
+        MISSING_COUNT=$((MISSING_COUNT + 1))
         continue
     fi
 
@@ -101,6 +111,11 @@ for entry in "${MAPPINGS[@]}"; do
     echo "  $src_rel  →  $dst_rel"
     DEST_FILES+=("$dst_rel")
 done
+
+if [ "$STRICT" = 1 ] && [ "$MISSING_COUNT" -gt 0 ]; then
+    echo "ERROR: $MISSING_COUNT missing, no archive was created."
+    exit 1
+fi
 
 ARCHIVE_ZIP="${ARCHIVE%.7z}.zip"
 

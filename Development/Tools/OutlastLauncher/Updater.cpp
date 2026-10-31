@@ -20,10 +20,8 @@
 #include <string>
 #include <vector>
 
-// ---- Version ---------------------------------------------------------------
-#ifndef CURRENT_VERSION
-#define CURRENT_VERSION   L"2.1.0"
-#endif
+#include "Version.h"
+
 #define GITHUB_REPO_PATH  L"ShyKiss/OpenOL"
 
 #ifndef RELEASE_API_URL

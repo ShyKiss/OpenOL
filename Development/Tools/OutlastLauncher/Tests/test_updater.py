@@ -2,7 +2,8 @@
 """Tests for Updater.cpp, run under Wine or Proton against real archives and a local HTTP server.
 
 Builds Tests/updater_test.cpp with mingw-w64, so no MSVC is needed.
-Usage: test_updater.py [--runner "wine"]  (the runner is the command that starts a .exe)
+Usage: test_updater.py [--runner "wine"] [--archive OpenOL.zip [--expect-version X.Y.Z]]
+The runner is the command that starts a .exe.
 """
 import argparse
 import hashlib
@@ -418,9 +419,34 @@ def test_parse(h, base):
         check(f"{a} > {b} is {want_newer}", (rc == 0) == want_newer)
 
 
+def test_archive(h, base, archive, version):
+    """Unpacks a release archive with the launcher's code and compares the result with what zipfile reads."""
+    print("release archive")
+    game = new_game(base, "archive")
+    rc, out = h.run("extract", winpath(os.path.abspath(archive)), winpath(game))
+    check("launcher can unpack it", rc == 0, out)
+    if rc != 0:
+        return
+
+    with zipfile.ZipFile(archive) as z:
+        want = {i.filename.replace("/", os.sep): z.read(i) for i in z.infolist() if not i.is_dir()}
+        methods = {i.compress_type for i in z.infolist()}
+    got = tree(os.path.join(game, "OpenOL_Update", "staged"))
+    check("all files match", got == want, f"{len(got)} unpacked, {len(want)} expected")
+    check("only Deflate or Store", methods <= {zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED}, str(methods))
+
+    if version:
+        launcher = want.get("OutlastLauncher.exe", b"")
+        # Both are UTF-16 in the exe: the updater's user agent and the file version resource.
+        check(f"launcher is built as {version}", ("OutlastLauncher/" + version).encode("utf-16-le") in launcher)
+        check(f"file version is {version}", version.encode("utf-16-le") + b"\0\0" in launcher)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runner", default="wine")
+    ap.add_argument("--archive", help="also check this release zip")
+    ap.add_argument("--expect-version", help="version the launcher in --archive must be built as")
     args = ap.parse_args()
 
     base = tempfile.mkdtemp(prefix="updater_test_", dir=os.environ.get("TMPDIR"))
@@ -438,6 +464,8 @@ def main():
         test_bad_archives(h, base)
         test_download(h, base)
         test_apply(h, base)
+        if args.archive:
+            test_archive(h, base, args.archive, args.expect_version)
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
