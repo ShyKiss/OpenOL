@@ -353,14 +353,14 @@ class RelayTest(unittest.TestCase):
         a = self.client()
         name = b"OLEnemyPawn_3"
         a.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(name, b"S" * 20))
-        a.send(P["CH_ENEMY"], P["ENEMY_LOC"], enemy(name, b"\0" + b"L" * 40))
+        a.send(P["CH_ENEMY"], P["ENEMY_LOC"], enemy(name, b"\0" + bytes(12) + b"L" * 28))
         a.send(P["CH_ENEMY"], P["ENEMY_DOOR_BREAK"], enemy(name, b"B" * 13))
         time.sleep(0.1)
         b = self.client(enter=False)
         b.enter()
         got = [d for d in b.recv_all(0.5) if d[0] == P["CH_ENEMY"]]
         self.assertEqual([d[1] for d in got], [P["ENEMY_SPAWN"], P["ENEMY_LOC"]])
-        self.assertIn(b"L" * 40, got[1])
+        self.assertIn(b"L" * 28, got[1])
 
     def test_push_denied_wire_format(self):
         a, b = self.client(), self.client()
@@ -903,6 +903,105 @@ class RelayTest(unittest.TestCase):
         b.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(b"Forged"))
         self.assertFalse([d for d in a.recv_all(0.2) if d[0] == P["CH_ENEMY"]])
 
+    # --- Checks on what clients claim ---
+
+    @staticmethod
+    def hero_state(x=0.0, y=0.0, z=0.0, smt=0, health=100):
+        body = struct.pack("<fffHHhhh", x, y, z, 0, 0, 0, 0, 0) + bytes([0, 0, smt, 0]) + struct.pack("<hhhh", 0, 0, 0, health)
+        return body + bytes(63 - len(body)) + b"\x00\x00\x01T"
+
+    @staticmethod
+    def is_state(d):
+        return d[0] == P["CH_HERO"] and d[1] == P["HERO_STATE"]
+
+    def test_hero_state_with_harmful_values_is_not_relayed(self):
+        a, b = self.client(), self.client()
+        nan = float("nan")
+        for payload in (self.hero_state(x=nan), self.hero_state(z=float("inf")), self.hero_state(y=1e9),
+                        self.hero_state(smt=200), self.hero_state(health=30000), self.hero_state()[:20]):
+            a.send(P["CH_HERO"], P["HERO_STATE"], payload)
+        self.assertFalse([d for d in b.recv_all(0.2) if self.is_state(d)])
+        a.send(P["CH_HERO"], P["HERO_STATE"], self.hero_state())
+        b.wait_for(self.is_state)
+
+    def test_implausible_movement_is_logged_but_relayed(self):
+        # Lag looks like this too, so nobody gets stopped for it.
+        a, b = self.client(), self.client()
+        a.send(P["CH_HERO"], P["HERO_STATE"], self.hero_state())
+        b.wait_for(self.is_state)
+        a.send(P["CH_HERO"], P["HERO_STATE"], self.hero_state(x=50000.0))
+        b.wait_for(self.is_state)
+        self.log.flush()
+        self.log.seek(0)
+        self.assertIn(b"moved faster than possible", self.log.read())
+
+    def test_special_move_and_new_spawn_may_teleport(self):
+        a, b = self.client(), self.client()
+        a.send(P["CH_HERO"], P["HERO_STATE"], self.hero_state())
+        b.wait_for(self.is_state)
+        a.send(P["CH_HERO"], P["HERO_STATE"], self.hero_state(x=50000.0, smt=33))
+        b.wait_for(self.is_state)
+        a.enter()
+        a.wait_for(sess("SESS_BASELINE_END"))
+        a.send(P["CH_HERO"], P["HERO_STATE"], self.hero_state(x=-50000.0))
+        b.wait_for(self.is_state)
+        self.log.flush()
+        self.log.seek(0)
+        self.assertNotIn(b"moved faster than possible", self.log.read())
+
+    @staticmethod
+    def is_event(d):
+        return d[0] == P["CH_HERO"] and d[1] == P["HERO_PLAYER_EVENT"]
+
+    def owner_and_victim(self):
+        owner = self.client()
+        victim = self.client()
+        victim.send(P["CH_HERO"], P["HERO_STATE"], self.hero_state())
+        owner.wait_for(self.is_state)
+        return owner, victim
+
+    @staticmethod
+    def hit(target):
+        return struct.pack("<I", target) + bytes(30)
+
+    @staticmethod
+    def enemy_loc(x=0.0, y=0.0, z=0.0):
+        return enemy(b"Bot", b"\x00" + struct.pack("<fff", x, y, z) + bytes(10))
+
+    def enemy_at(self, owner, victim, x=0.0):
+        owner.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(b"Bot"))
+        owner.send(P["CH_ENEMY"], P["ENEMY_LOC"], self.enemy_loc(x=x))
+        victim.wait_for(lambda d: d[0] == P["CH_ENEMY"] and d[1] == P["ENEMY_LOC"])
+
+    def test_player_owner_cannot_hit_with_no_enemy_nearby(self):
+        owner, victim = self.owner_and_victim()
+        owner.send(P["CH_HERO"], P["HERO_PLAYER_EVENT"], self.hit(victim.player_id))
+        self.assertFalse([d for d in victim.recv_all(0.2) if self.is_event(d)])
+        self.enemy_at(owner, victim, x=100.0)
+        owner.send(P["CH_HERO"], P["HERO_PLAYER_EVENT"], self.hit(victim.player_id))
+        victim.wait_for(self.is_event)
+
+    def test_event_for_unknown_target_is_dropped(self):
+        owner, victim = self.owner_and_victim()
+        self.enemy_at(owner, victim)
+        owner.send(P["CH_HERO"], P["HERO_PLAYER_EVENT"], self.hit(424242))
+        self.assertFalse([d for d in victim.recv_all(0.2) if self.is_event(d)])
+
+    def test_player_events_are_rate_limited(self):
+        owner, victim = self.owner_and_victim()
+        self.enemy_at(owner, victim)
+        for _ in range(30):
+            owner.send(P["CH_HERO"], P["HERO_PLAYER_EVENT"], self.hit(victim.player_id))
+        self.assertEqual(len([d for d in victim.recv_all(0.3) if self.is_event(d)]), 8)
+
+    def test_enemy_position_with_nan_is_not_relayed(self):
+        owner, victim = self.owner_and_victim()
+        victim.recv_all(0.1)
+        owner.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(b"Bot"))
+        victim.wait_for(lambda d: d[0] == P["CH_ENEMY"])
+        owner.send(P["CH_ENEMY"], P["ENEMY_LOC"], self.enemy_loc(x=float("nan")))
+        self.assertFalse([d for d in victim.recv_all(0.2) if d[0] == P["CH_ENEMY"]])
+
     # --- Headless simulator ---
 
     def sim_node(self):
@@ -988,7 +1087,7 @@ class RelayTest(unittest.TestCase):
         node.wait_for(sess("SESS_BASELINE_END"))
         node.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(b"Bot1"))
         a.wait_for(lambda d: d[0] == P["CH_ENEMY"] and d[1] == P["ENEMY_SPAWN"])
-        node.send(P["CH_HERO"], P["HERO_PLAYER_EVENT"], struct.pack("<I", a.player_id) + b"\x01")
+        node.send(P["CH_HERO"], P["HERO_PLAYER_EVENT"], struct.pack("<I", a.player_id) + b"\x01" * 5)
         a.wait_for(lambda d: d[0] == P["CH_HERO"] and d[1] == P["HERO_PLAYER_EVENT"])
 
     def test_sim_not_counted_online(self):
