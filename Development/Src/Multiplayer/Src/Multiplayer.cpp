@@ -60,6 +60,9 @@ void AutoInitializeRegistrantsMultiplayer( INT& Lookup )
 {
     AUTO_INITIALIZE_REGISTRANTS_MULTIPLAYER;
     GReloadConfigCallback = &MpReloadConfigCallback;
+
+    extern void SimTest_Init();
+    SimTest_Init();
 }
 
 /**

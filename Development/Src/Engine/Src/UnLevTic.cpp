@@ -3445,7 +3445,7 @@ void UWorld::Tick( ELevelTick TickType, FLOAT DeltaSeconds )
 			APlayerController* PC = C->GetAPlayerController();
 			AOLPlayerController* OLPC = Cast<AOLPlayerController>(C);
 
-			if (OLPC && OLPC->HeroPawn)
+			if (OLPC && OLPC->HeroPawn && !OLPC->HeroPawn->bIsDummyPawn)
 			{
 				OLPC->HeroPawn->UpdateCamera(DeltaSeconds);
 			}
