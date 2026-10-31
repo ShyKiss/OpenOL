@@ -2022,6 +2022,9 @@ UBOOL AOLBot::TryGrabNormal(UBOOL bCrouched)
 
 	if (TargetPlayer->bIsDummyPawn)
 	{
+		// The throw that follows needs a direction, as for a local target.
+		CalculateThrowDirection(GrabTargetStartLocation - AttackStartRotation * EnemyPawn->ThrowStartPlayerDistance, AttackStartRotation);
+
 		// Mirror TryGrabNormal: pass CharForward (victim's facing) as targetDirection so
 		// ActivatePositionAdjustment on the client computes headingError correctly.
 		// bLeftAnim/blendAlpha mirror TryGrabNormal's lookAngleToAttacker computation.

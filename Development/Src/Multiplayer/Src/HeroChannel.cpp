@@ -1145,6 +1145,11 @@ void UHeroChannel::OnBinaryPlayerEvent(INT SenderID, BYTE* Data, INT DataLen)
     {
         if (!GMpConn.SyncEnemies) return;
         Hero->SpecialMoveTargetYaw = Pkt.ThrowRotX100000 / 100000.f;
+        debugf(NAME_Log, TEXT("[MP] Thrown: yaw=%.2f current SMT=%d"), Hero->SpecialMoveTargetYaw, (INT)Hero->SpecialMove);
+        // Same failsafe as TryThrowPlayer: the end of the grab animation must not finish
+        // the throw when both land on the same frame.
+        if (Hero->SpecialMove != SMT_None && Hero->CustomBlendNode)
+            Hero->CustomBlendNode->bInhibitEndNotifies = TRUE;
         Hero->StartSpecialMove(67, FVector(0,0,0), FVector(0,0,0));
         break;
     }
@@ -1161,6 +1166,9 @@ void UHeroChannel::OnBinaryPlayerEvent(INT SenderID, BYTE* Data, INT DataLen)
 
         Hero->SetDummyKillParams(Pkt.EnemyTypeInt, Pkt.WeaponType,
                                  Pkt.bBackAnim != 0, Pkt.bLeftAnim != 0, BlendAlpha);
+
+        if (Hero->SpecialMove != SMT_None && Hero->CustomBlendNode)
+            Hero->CustomBlendNode->bInhibitEndNotifies = TRUE;
 
         if (Pkt.KillType == 1)
         {
@@ -1962,6 +1970,7 @@ void FHeroChannelReceiveTicker::Tick(FLOAT DeltaTime)
     }
 
     // ---- Remote enemy interpolation ----
+    extern void EnemyChannel_TickDummyAnim(AOLEnemyPawn*);
     if (!GMpConn.SyncEnemies)
         return;
     const FLOAT EnemyInterpSpeed = 8.0f;
@@ -1975,6 +1984,7 @@ void FHeroChannelReceiveTicker::Tick(FLOAT DeltaTime)
     {
         FRemoteEnemyState& RS = Controller->RemoteEnemies(i);
         if (!RS.DummyEnemy) continue;
+        EnemyChannel_TickDummyAnim(RS.DummyEnemy);
         if (RS.DummyEnemy->bBlockActors != bBlockHero)
             RS.DummyEnemy->SetCollision(bBlockHero, bBlockHero, TRUE);
         FLOAT DT = DeltaTime;

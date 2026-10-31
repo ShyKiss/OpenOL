@@ -153,7 +153,7 @@ static void PromoteDummyEnemies(AMultiplayerController* Ctrl)
         if (!Dummy) continue;
 
         AOLEnemyPawn* Real = Cast<AOLEnemyPawn>(GWorld->SpawnActor(Dummy->GetClass(), NAME_None,
-            Dummy->Location, Dummy->Rotation, NULL, TRUE, TRUE));
+            Dummy->Location, Dummy->Rotation, NULL, TRUE, FALSE));
         if (Real)
         {
             AOLBot* Bot = Cast<AOLBot>(GWorld->SpawnActor(AOLBot::StaticClass()));
@@ -217,9 +217,12 @@ void EnemyChannel_OnSimOwnerChanged(AMultiplayerController* Ctrl, INT NewOwner)
 // Kismet, the behavior tree or a special move. New cases need no new packets.
 // ============================================================================
 
+static void ForgetDummyAnims();
+
 void EnemyChannel_ResetSession()
 {
     GSentEnemyAnims.Empty();
+    ForgetDummyAnims();
 }
 
 // A matinee drives its slot directly and wins over any custom animation.
@@ -324,6 +327,103 @@ static void SendEnemyAnim(AOLEnemyPawn* E)
     GMpConn.SendBinary(B, N);
 }
 
+// What a dummy should be playing according to the owner. Applied every tick rather than
+// once: the first packet arrives together with ENEMY_SPAWN, before the anim tree is ready,
+// and the tree or a special move may reset the slot later.
+struct FDummyAnim
+{
+    FName   SlotName;
+    FName   AnimName;
+    FString SetPath;
+    FLOAT   Rate;
+    FLOAT   StartPos;
+    FLOAT   Duration;     // 0 until it has started
+    DOUBLE  ReceivedAt;
+    DOUBLE  NextTry;
+    UBOOL   bLooping;
+    UBOOL   bRootMotion;
+    UBOOL   bLoggedMissing;
+};
+static TMap<AOLEnemyPawn*, FDummyAnim> GDummyAnims;
+
+static void ForgetDummyAnims()
+{
+    GDummyAnims.Empty();
+}
+
+static UAnimNodeSlot* FindDummySlot(AOLEnemyPawn* Dummy, FName SlotName)
+{
+    UAnimNodeSlot* Slot = SlotName != NAME_None ? Cast<UAnimNodeSlot>(Dummy->Mesh->FindAnimNode(SlotName)) : NULL;
+    if (!Slot)
+        Slot = Cast<UAnimNodeSlot>(Dummy->Mesh->FindAnimNode(FName(TEXT("FullBodySlot"))));
+    return Slot;
+}
+
+// Called every tick for each dummy from FHeroChannelReceiveTicker.
+void EnemyChannel_TickDummyAnim(AOLEnemyPawn* Dummy)
+{
+    FDummyAnim* A = GDummyAnims.Find(Dummy);
+    if (!A || !Dummy->Mesh) return;
+
+    UAnimNodeSlot* Slot = FindDummySlot(Dummy, A->SlotName);
+    if (!Slot) return;  // anim tree not initialised yet
+
+    UAnimNodeSequence* Seq = Slot->GetCustomAnimNodeSeq();
+    if (Slot->bIsPlayingCustomAnim && Seq && Seq->AnimSeqName == A->AnimName)
+        return;
+
+    const DOUBLE Now = appSeconds();
+    const FLOAT  Expected = A->StartPos + (FLOAT)(Now - A->ReceivedAt) * A->Rate;
+    // It has played out here too; the owner's stop just has not arrived yet.
+    if (A->Duration > 0.f && !A->bLooping && Expected >= A->Duration - 0.1f)
+    {
+        GDummyAnims.Remove(Dummy);
+        return;
+    }
+    if (Now < A->NextTry) return;
+    A->NextTry = Now + 0.25;
+
+    if (A->SetPath.Len() > 0)
+    {
+        UAnimSet* AnimSet = LoadObject<UAnimSet>(NULL, *A->SetPath, NULL, LOAD_None, NULL);
+        if (AnimSet && Dummy->Mesh->AnimSets.FindItemIndex(AnimSet) == INDEX_NONE)
+        {
+            Dummy->Mesh->AnimSets.AddItem(AnimSet);
+            Dummy->Mesh->UpdateAnimations();
+        }
+    }
+
+    const FLOAT Duration = Slot->PlayCustomAnim(A->AnimName, A->Rate, 0.2f, 0.2f, A->bLooping, TRUE);
+    if (Duration <= 0.f)
+    {
+        if (!A->bLoggedMissing)
+        {
+            A->bLoggedMissing = TRUE;
+            debugf(NAME_Log, TEXT("[MP] Enemy anim not found on %s: %s (set '%s', slot %s)"),
+                *Dummy->GetName(), *A->AnimName.ToString(), *A->SetPath, *Slot->NodeName.ToString());
+        }
+        return;
+    }
+    if (A->Duration == 0.f)
+        debugf(NAME_Log, TEXT("[MP] Dummy %s plays %s at %.2f/%.2f"), *Dummy->GetName(), *A->AnimName.ToString(), Expected, Duration);
+    A->Duration = Duration;
+
+    Seq = Slot->GetCustomAnimNodeSeq();
+    if (Seq)
+    {
+        // The network already moves the dummy; the bone must not move it a second time.
+        const BYTE RootOption = A->bRootMotion ? RBA_Discard : RBA_Default;
+        Seq->RootBoneOption[0] = RootOption;
+        Seq->RootBoneOption[1] = RootOption;
+        Seq->RootBoneOption[2] = RootOption;
+        // Skips what the owner has already played.
+        if (Expected > 0.05f && (A->bLooping || Expected < Duration))
+            Seq->SetPosition(A->bLooping ? appFmod(Expected, Duration) : Expected, FALSE);
+    }
+    if (Slot == Dummy->FullBodyAnimSlot)
+        Dummy->bIsAnimatingFullBody = TRUE;
+}
+
 static void ApplyEnemyAnim(AOLEnemyPawn* Dummy, BYTE* Data, INT DataLen, INT Off)
 {
     if (!Dummy->Mesh || Off >= DataLen) return;
@@ -333,16 +433,13 @@ static void ApplyEnemyAnim(AOLEnemyPawn* Dummy, BYTE* Data, INT DataLen, INT Off
     Off = ReadU8(Data, Off, Flags);
     Off = ReadStr(Data, Off, DataLen, SlotName);
 
-    UAnimNodeSlot* Slot = SlotName.Len() > 0 ? Cast<UAnimNodeSlot>(Dummy->Mesh->FindAnimNode(FName(*SlotName))) : NULL;
-    if (!Slot)
-        Slot = Dummy->FullBodyAnimSlot;
-    if (!Slot) return;
-
     if (Flags & ENEMY_ANIM_STOP)
     {
-        if (Slot->bIsPlayingCustomAnim)
+        GDummyAnims.Remove(Dummy);
+        UAnimNodeSlot* Slot = FindDummySlot(Dummy, FName(*SlotName));
+        if (Slot && Slot->bIsPlayingCustomAnim)
             Slot->StopCustomAnim(0.2f);
-        if (Slot == Dummy->FullBodyAnimSlot)
+        if (Slot && Slot == Dummy->FullBodyAnimSlot)
             Dummy->bIsAnimatingFullBody = FALSE;
         return;
     }
@@ -350,42 +447,23 @@ static void ApplyEnemyAnim(AOLEnemyPawn* Dummy, BYTE* Data, INT DataLen, INT Off
     Off = ReadStr(Data, Off, DataLen, SetPath);
     Off = ReadStr(Data, Off, DataLen, AnimName);
     if (Off + 8 > DataLen || AnimName.Len() == 0) return;
-    FLOAT Pos = 0.f, Rate = 1.f;
-    Off = ReadF32(Data, Off, Pos);
-    Off = ReadF32(Data, Off, Rate);
 
-    if (SetPath.Len() > 0)
-    {
-        UAnimSet* AnimSet = LoadObject<UAnimSet>(NULL, *SetPath, NULL, LOAD_None, NULL);
-        if (AnimSet && Dummy->Mesh->AnimSets.FindItemIndex(AnimSet) == INDEX_NONE)
-        {
-            Dummy->Mesh->AnimSets.AddItem(AnimSet);
-            Dummy->Mesh->UpdateAnimations();
-        }
-    }
-
-    const FName Anim(*AnimName);
-    UAnimNodeSequence* Seq = Slot->GetCustomAnimNodeSeq();
-    // A special move usually started this animation a moment ago: do not restart it.
-    if (Slot->bIsPlayingCustomAnim && Seq && Seq->AnimSeqName == Anim && Abs(Seq->CurrentTime - Pos) < 0.5f)
-        return;
-
-    if (Slot->PlayCustomAnim(Anim, Rate, 0.2f, 0.2f, (Flags & ENEMY_ANIM_LOOP) != 0, TRUE) <= 0.f)
-        debugf(NAME_Log, TEXT("[MP] Enemy anim not found on %s: %s (set '%s')"), *Dummy->GetName(), *AnimName, *SetPath);
-    Seq = Slot->GetCustomAnimNodeSeq();
-    if (Seq)
-    {
-        // The network already moves the dummy; the bone must not move it a second time.
-        const BYTE RootOption = (Flags & ENEMY_ANIM_ROOT) ? RBA_Discard : RBA_Default;
-        Seq->RootBoneOption[0] = RootOption;
-        Seq->RootBoneOption[1] = RootOption;
-        Seq->RootBoneOption[2] = RootOption;
-        // Skips the start for a late joiner.
-        if (Pos > 0.05f)
-            Seq->SetPosition(Pos, FALSE);
-    }
-    if (Slot == Dummy->FullBodyAnimSlot)
-        Dummy->bIsAnimatingFullBody = TRUE;
+    FDummyAnim A;
+    A.Rate           = 1.f;
+    A.StartPos       = 0.f;
+    A.SlotName       = FName(*SlotName);
+    A.AnimName       = FName(*AnimName);
+    A.SetPath        = SetPath;
+    A.Duration       = 0.f;
+    A.ReceivedAt     = appSeconds();
+    A.NextTry        = 0.0;
+    A.bLooping       = (Flags & ENEMY_ANIM_LOOP) != 0;
+    A.bRootMotion    = (Flags & ENEMY_ANIM_ROOT) != 0;
+    A.bLoggedMissing = FALSE;
+    Off = ReadF32(Data, Off, A.StartPos);
+    Off = ReadF32(Data, Off, A.Rate);
+    GDummyAnims.Set(Dummy, A);
+    EnemyChannel_TickDummyAnim(Dummy);
 }
 
 // ============================================================================
@@ -887,7 +965,10 @@ static void ApplyDel(UEnemyChannel* Ch, INT SenderID, const FString& EnemyName)
             && Ctrl->RemoteEnemies(j).OwnerID == SenderID)
         {
             if (Ctrl->RemoteEnemies(j).DummyEnemy)
+            {
+                GDummyAnims.Remove(Ctrl->RemoteEnemies(j).DummyEnemy);
                 GWorld->DestroyActor(Ctrl->RemoteEnemies(j).DummyEnemy);
+            }
             Ctrl->RemoteEnemies.Remove(j, 1);
             break;
         }
@@ -918,6 +999,9 @@ static void ApplySmt(UEnemyChannel* Ch, INT SenderID,
                     }
                 }
             }
+            // The special move owns the slot now; ENEMY_ANIM follows if the owner plays
+            // something the mesh shows, and a blended throw must not be overwritten.
+            GDummyAnims.Remove(RS.DummyEnemy);
             CallPlayNetSMT(RS.DummyEnemy, SMTType, Param1, Param2);
             break;
         }
