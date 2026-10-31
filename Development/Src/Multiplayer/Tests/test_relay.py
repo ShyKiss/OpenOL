@@ -6,6 +6,10 @@ UDP. Requires cmake, ninja and a C/C++ compiler.
 
     python3 Tests/test_relay.py [-v]
 """
+import atexit
+import ctypes
+import hashlib
+import json
 import os
 import random
 import re
@@ -25,6 +29,8 @@ SERVER_SRC = os.path.join(MP, "server", "src")
 PORT = 27790
 MAGIC = 0xF3
 ROOM = "PUBLIC"
+HS_VERSION = 1
+SIM_SECRET = "test simulator secret"
 
 
 def load_protocol():
@@ -48,34 +54,113 @@ def lane_for(channel, ptype):
     return 1
 
 
+class Crypto:
+    """The vendored Monocypher through ctypes, so the tests need no Python packages."""
+
+    def __init__(self):
+        self.dir = tempfile.mkdtemp(prefix="ol_crypto_test_")
+        lib = os.path.join(self.dir, "mono.so")
+        subprocess.check_call(["cc", "-O1", "-shared", "-fPIC", "-o", lib,
+                               os.path.join(SERVER_SRC, "third_party", "monocypher", "monocypher.c")])
+        self.lib = ctypes.CDLL(lib)
+
+    def x25519_public(self, priv):
+        out = ctypes.create_string_buffer(32)
+        self.lib.crypto_x25519_public_key(out, priv)
+        return out.raw
+
+    def x25519(self, priv, pub):
+        out = ctypes.create_string_buffer(32)
+        self.lib.crypto_x25519(out, priv, pub)
+        return out.raw
+
+    def aead_lock(self, key, nonce, ad, plain):
+        mac, out = ctypes.create_string_buffer(16), ctypes.create_string_buffer(max(len(plain), 1))
+        self.lib.crypto_aead_lock(out, mac, key, nonce, ad, ctypes.c_size_t(len(ad)), plain, ctypes.c_size_t(len(plain)))
+        return mac.raw, out.raw[:len(plain)]
+
+    def aead_unlock(self, key, nonce, ad, mac, sealed):
+        out = ctypes.create_string_buffer(max(len(sealed), 1))
+        bad = self.lib.crypto_aead_unlock(out, mac, key, nonce, ad, ctypes.c_size_t(len(ad)), sealed, ctypes.c_size_t(len(sealed)))
+        return None if bad else out.raw[:len(sealed)]
+
+
+crypto = Crypto()
+atexit.register(shutil.rmtree, crypto.dir, True)
+
+
 class Client:
     """Minimal client of the ol_transport protocol over a lossless loopback."""
 
-    def __init__(self, room=ROOM):
+    def __init__(self, room=ROOM, password="", role=0, port=None, token=None):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 0))
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 22)
-        self.sock.connect(("127.0.0.1", PORT))
+        self.sock.connect(("127.0.0.1", port or PORT))
         self.inbox = []
         self.conn_id = 0
         self.seq = 0
         self.out_id = 0
         self.in_next = 0
         self.in_buf = {}
-        self.sock.send(("HELLO,%s,\n" % room).encode())
-        end = time.monotonic() + 2.0
-        ready = None
-        while time.monotonic() < end and not ready:
-            if select.select([self.sock], [], [], end - time.monotonic())[0]:
-                data = self.sock.recv(4096)
-                if data[0] == P["SRV_READY"]:
-                    ready = data
-        if not ready:
-            raise AssertionError("no READY")
+        self.send_counter = 0
+        self.recv_counter = -1
+        self.room, self.password, self.role = room, password, role
+        self.sent = []
+        ready = self.handshake(token)
+        if ready is None or ready[0] != P["SRV_READY"]:
+            raise AssertionError("refused: %r" % (ready[6:] if ready else "no answer"))
         self.player_id = struct.unpack_from("<I", ready, 5)[0]
         name_len = ready[9]
         self.token = ready[10 + name_len:10 + name_len + 32]
         self.conn_id = struct.unpack_from("<Q", ready, 10 + name_len + 32)[0]
+
+    def hello_packet(self):
+        return bytes([P["OL_HS_HELLO"], HS_VERSION]) + bytes(62)
+
+    def auth_packet(self, challenge, token=None):
+        """Builds AUTH from a challenge; independent of the C implementation of the format."""
+        server_pub, cookie = challenge[2:34], challenge[34:50]
+        priv = os.urandom(32)
+        pub = crypto.x25519_public(priv)
+        root = hashlib.blake2b(crypto.x25519(priv, server_pub) + pub + server_pub, digest_size=32).digest()
+        derive = lambda label: hashlib.blake2b(label, key=root, digest_size=32).digest()
+        self.c2s, self.s2c, self.result_key = derive(b"openol c2s"), derive(b"openol s2c"), derive(b"openol result")
+        secret_key = hashlib.blake2b(self.password.encode(), digest_size=32).digest()
+        proof = hashlib.blake2b(root + cookie, key=secret_key, digest_size=32).digest()
+        plain = (bytes([self.role]) + proof + bytes([1 if token else 0]) + (token or bytes(32))
+                 + bytes([len(self.room)]) + self.room.encode())
+        head = bytes([P["OL_HS_AUTH"], HS_VERSION]) + pub + cookie
+        mac, sealed = crypto.aead_lock(derive(b"openol auth"), bytes(24), head, plain)
+        return head + mac + sealed
+
+    def next_of_type(self, first_byte):
+        """Next raw datagram starting with first_byte, skipping session traffic."""
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            if select.select([self.sock], [], [], end - time.monotonic())[0]:
+                data = self.sock.recv(4096)
+                if data[0] == first_byte:
+                    return data
+        raise AssertionError("no datagram of type %#x" % first_byte)
+
+    def fresh_challenge(self):
+        self.sock.send(self.hello_packet())
+        return self.next_of_type(P["OL_HS_CHALLENGE"])
+
+    def handshake(self, token=None):
+        """Returns the opened HS_RESULT, or None if the server stays silent."""
+        self.sock.send(self.hello_packet())
+        end = time.monotonic() + 2.0
+        while time.monotonic() < end:
+            if not select.select([self.sock], [], [], end - time.monotonic())[0]:
+                break
+            data = self.sock.recv(4096)
+            if data[0] == P["OL_HS_CHALLENGE"]:
+                self.sock.send(self.auth_packet(data, token))
+            elif data[0] == P["OL_HS_RESULT"]:
+                return crypto.aead_unlock(self.result_key, bytes(24), data[:2], data[2:18], data[18:])
+        return None
 
     def enter(self, cp="CP_A", persist="MapA", epoch=0, reset=False):
         body = struct.pack("<HB", epoch, 1 if reset else 0) + wstr(cp) + wstr(persist)
@@ -83,7 +168,18 @@ class Client:
 
     def header(self):
         self.seq = (self.seq + 1) & 0xFFFF
-        return struct.pack("<BQHHI", MAGIC, self.conn_id, self.seq, self.in_next, 0)
+        return struct.pack("<HHI", self.seq, self.in_next, 0)
+
+    def seal(self, inner):
+        """A complete datagram around header() + messages."""
+        head = struct.pack("<BQI", MAGIC, self.conn_id, self.send_counter)
+        nonce = struct.pack("<I", self.send_counter) + bytes(20)
+        self.send_counter += 1
+        mac, sealed = crypto.aead_lock(self.c2s, nonce, head, inner)
+        return head + mac + sealed
+
+    def send_inner(self, inner):
+        self.sock.send(self.seal(inner))
 
     def raw_message(self, lane, msg):
         if lane == 0:
@@ -94,12 +190,21 @@ class Client:
 
     def send(self, channel, ptype, payload=b""):
         msg = bytes([channel, ptype]) + struct.pack("<I", self.player_id) + payload
-        self.sock.send(self.header() + self.raw_message(lane_for(channel, ptype), msg))
+        self.send_inner(self.header() + self.raw_message(lane_for(channel, ptype), msg))
+
+    def open_datagram(self, data):
+        counter = struct.unpack_from("<I", data, 9)[0]
+        nonce = struct.pack("<I", counter) + bytes(20)
+        inner = crypto.aead_unlock(self.s2c, nonce, data[:13], data[13:29], data[29:])
+        if inner is None:
+            raise AssertionError("server sent a datagram that does not authenticate")
+        return inner
 
     def on_datagram(self, data):
-        if data[0] != MAGIC:
+        if data[0] != MAGIC or len(data) < 37:
             return
-        off, acked = 17, False
+        data = bytes(29) + self.open_datagram(data)
+        off, acked = 37, False
         while off < len(data):
             lane = data[off]
             if lane == 0:
@@ -116,7 +221,7 @@ class Client:
                 off += 5 + n
                 acked = True
         if acked:
-            self.sock.send(self.header())
+            self.send_inner(self.header())
 
     def pump(self, timeout):
         if select.select([self.sock], [], [], timeout)[0]:
@@ -192,6 +297,7 @@ class RelayTest(unittest.TestCase):
             os.remove(db)
         self.log = tempfile.TemporaryFile()
         self.server = subprocess.Popen([self.exe, "--port", str(PORT)], cwd=self.build_dir,
+                                       env=dict(os.environ, OPENOL_SIM_SECRET=SIM_SECRET),
                                        stdin=subprocess.DEVNULL, stdout=self.log,
                                        stderr=subprocess.STDOUT)
         time.sleep(0.3)
@@ -209,8 +315,8 @@ class RelayTest(unittest.TestCase):
         self.assertFalse(crashed, "server exited during the test:\n" + output[-4000:])
         self.assertNotIn("Sanitizer", output, output[-4000:])
 
-    def client(self, enter=True):
-        c = Client()
+    def client(self, enter=True, **kwargs):
+        c = Client(**kwargs)
         self.clients.append(c)
         if enter:
             c.enter()
@@ -632,7 +738,8 @@ class RelayTest(unittest.TestCase):
         exe = os.path.join(self.build_dir, "test_transport")
         subprocess.check_call(["cc", "-std=c11", "-g", "-O1", "-fsanitize=address,undefined",
                                "-I", SERVER_SRC, os.path.join(HERE, "test_transport.c"),
-                               os.path.join(SERVER_SRC, "ol_transport.c"), "-o", exe])
+                               os.path.join(SERVER_SRC, "ol_transport.c"),
+                               os.path.join(SERVER_SRC, "third_party", "monocypher", "monocypher.c"), "-o", exe])
         out = subprocess.run([exe], capture_output=True, text=True, timeout=120)
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
 
@@ -644,7 +751,7 @@ class RelayTest(unittest.TestCase):
         end = time.monotonic() + 1.5
         while time.monotonic() < end and seen < 2:
             if select.select([b.sock], [], [], 0.1)[0]:
-                if bytes([P["CH_HERO"], P["HERO_SMT_TYPE"]]) in b.sock.recv(4096):
+                if bytes([P["CH_HERO"], P["HERO_SMT_TYPE"]]) in b.open_datagram(b.sock.recv(4096)):
                     seen += 1
         self.assertGreaterEqual(seen, 2)
 
@@ -667,7 +774,7 @@ class RelayTest(unittest.TestCase):
     def test_sender_id_cannot_be_forged(self):
         a, b = self.client(), self.client()
         msg = bytes([P["CH_HERO"], P["HERO_HEAD_ROT"]]) + struct.pack("<I", b.player_id) + b"\x11" * 8
-        a.sock.send(a.header() + a.raw_message(0, msg))
+        a.send_inner(a.header() + a.raw_message(0, msg))
         data = b.wait_for(lambda d: d[0] == P["CH_HERO"] and d[1] == P["HERO_HEAD_ROT"])
         self.assertEqual(struct.unpack_from("<I", data, 2)[0], a.player_id)
 
@@ -681,12 +788,125 @@ class RelayTest(unittest.TestCase):
         self.assert_alive(a)
         raw.close()
 
+    # --- Handshake and session security ---
+
+    def restart_with_room(self, code, password):
+        self.server.terminate()
+        self.server.wait()
+        with open(os.path.join(self.build_dir, "relay.db"), "w") as f:
+            json.dump({"rooms": [{"code": code, "password": password, "trusted": [], "bans": []}], "bans": []}, f)
+        self.server = subprocess.Popen([self.exe, "--port", str(PORT)], cwd=self.build_dir,
+                                       env=dict(os.environ, OPENOL_SIM_SECRET=SIM_SECRET),
+                                       stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT)
+        time.sleep(0.3)
+
+    def test_room_password_is_proved_not_sent(self):
+        self.restart_with_room("SAFE", "hunter2")
+        with self.assertRaises(AssertionError):
+            self.clients.append(Client(room="SAFE", password="wrong"))
+        good = self.client(enter=False, room="SAFE", password="hunter2")
+        self.assertTrue(good.player_id)
+        challenge = bytes([P["OL_HS_CHALLENGE"], HS_VERSION]) + bytes(48)
+        self.assertNotIn(b"hunter2", good.auth_packet(challenge))
+
+    def test_password_is_required_again_from_the_same_address(self):
+        # No trust by IP: everyone arriving through the Steam bridge shares 127.0.0.1.
+        self.restart_with_room("SAFE", "hunter2")
+        self.client(enter=False, room="SAFE", password="hunter2")
+        with self.assertRaises(AssertionError):
+            self.clients.append(Client(room="SAFE", password=""))
+
+    def test_challenge_cannot_amplify(self):
+        hello = bytes([P["OL_HS_HELLO"], HS_VERSION]) + bytes(62)
+        raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        raw.connect(("127.0.0.1", PORT))
+        raw.send(hello[:20])
+        self.assertFalse(select.select([raw], [], [], 0.2)[0], "short hello must be ignored")
+        raw.send(hello)
+        self.assertTrue(select.select([raw], [], [], 1.0)[0])
+        self.assertLessEqual(len(raw.recv(4096)), len(hello))
+        raw.close()
+
+    def test_auth_needs_cookie_of_this_address(self):
+        victim = self.client(enter=False)
+        challenge = victim.fresh_challenge()
+        spoofer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        spoofer.connect(("127.0.0.1", PORT))
+        spoofer.send(victim.auth_packet(challenge))
+        self.assertFalse(select.select([spoofer], [], [], 0.3)[0])
+        spoofer.close()
+
+    def test_repeated_auth_gets_the_same_session(self):
+        c = self.client(enter=False)
+        auth = c.auth_packet(c.fresh_challenge())
+        answers = []
+        for _ in range(2):
+            c.sock.send(auth)
+            data = c.next_of_type(P["OL_HS_RESULT"])
+            answers.append(crypto.aead_unlock(c.result_key, bytes(24), data[:2], data[2:18], data[18:]))
+        self.assertEqual(answers[0], answers[1])
+
+    def test_token_resumes_session_only_with_the_right_token(self):
+        a = self.client()
+        resumed = self.client(enter=False, token=a.token)
+        self.assertEqual(resumed.player_id, a.player_id)
+        other = self.client(enter=False, token=bytes(32))
+        self.assertNotEqual(other.player_id, a.player_id)
+
+    def test_tampered_datagram_is_ignored(self):
+        a, b = self.client(), self.client()
+        b.recv_all(0.1)
+        msg = bytes([P["CH_HERO"], P["HERO_HEAD_ROT"]]) + struct.pack("<I", a.player_id) + b"\x11" * 8
+        packet = bytearray(a.seal(a.header() + a.raw_message(0, msg)))
+        packet[-1] ^= 1
+        a.sock.send(bytes(packet))
+        self.assertFalse([d for d in b.recv_all(0.2) if d[:2] == msg[:2]])
+
+    def test_replayed_datagram_is_ignored(self):
+        a, b = self.client(), self.client()
+        b.recv_all(0.1)
+        chat = struct.pack("<I", a.player_id) + b"\x11" * 8
+        packet = a.seal(a.header() + a.raw_message(0, bytes([P["CH_HERO"], P["HERO_HEAD_ROT"]]) + chat))
+        a.sock.send(packet)
+        self.assertEqual(len([d for d in b.recv_all(0.2) if d[1] == P["HERO_HEAD_ROT"]]), 1)
+        a.sock.send(packet)
+        self.assertFalse([d for d in b.recv_all(0.2) if d[1] == P["HERO_HEAD_ROT"]])
+
+    def test_stranger_cannot_redirect_a_session(self):
+        a = self.client()
+        stranger = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        stranger.connect(("127.0.0.1", PORT))
+        # Right conn_id and a copy of a real datagram, from another address.
+        stranger.send(a.seal(a.header()))
+        stranger.send(struct.pack("<BQI", MAGIC, a.conn_id, 999) + bytes(40))
+        time.sleep(0.1)
+        self.assert_alive(a)
+        self.assertFalse(select.select([stranger], [], [], 0.2)[0])
+        stranger.close()
+
+    def test_simulator_needs_the_server_secret(self):
+        with self.assertRaises(AssertionError):
+            self.clients.append(Client(password="", role=1))
+        with self.assertRaises(AssertionError):
+            self.clients.append(Client(password="guess", role=1))
+        self.assertTrue(self.sim_node().player_id)
+
+    def test_only_one_simulator_per_room(self):
+        self.sim_node()
+        with self.assertRaises(AssertionError):
+            self.clients.append(Client(password=SIM_SECRET, role=1))
+
+    def test_player_cannot_become_simulator_through_session_channel(self):
+        a = self.client()
+        a.send(P["CH_SESS"], 0x09)  # the old SESS_SIM_HELLO
+        b = self.client()
+        b.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(b"Forged"))
+        self.assertFalse([d for d in a.recv_all(0.2) if d[0] == P["CH_ENEMY"]])
+
     # --- Headless simulator ---
 
     def sim_node(self):
-        node = self.client(enter=False)
-        node.send(P["CH_SESS"], P["SESS_SIM_HELLO"])
-        return node
+        return self.client(enter=False, password=SIM_SECRET, role=1)
 
     @staticmethod
     def owner_is(player_id):
@@ -831,9 +1051,9 @@ class RelayTest(unittest.TestCase):
             if i % 40 == 0:
                 a.pump(0)
             if i % 7 == 0:
-                # Garbage transport framing with a valid conn_id.
+                # Garbage transport framing inside an authentic datagram.
                 n = rng.choice(lengths)
-                a.sock.send(a.header() + rng.randbytes(n))
+                a.send_inner(a.header() + rng.randbytes(n))
             if i % 1000 == 0:
                 time.sleep(0.005)
         # Let the per-second rate window reset, otherwise the ping itself is dropped.

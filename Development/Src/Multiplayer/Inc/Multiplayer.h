@@ -10,6 +10,7 @@
 #include "IpDrvClasses.h"
 #include "OLGame.h"
 #include "ol_transport.h"
+#include "ol_crypto.h"
 
 // Native structs referenced by AMultiplayerController — must be declared before MultiplayerClasses.h.
 // Fields match the UC struct declarations in MultiplayerController.uc.
@@ -87,8 +88,9 @@ public:
     // for reliable NAT rebind slot identification.
     BYTE SessionToken[32];
 
-    // Reliable transport session; conn_id comes from SRV_READY.
+    // Reliable transport session; conn_id comes from SRV_READY, keys from the handshake.
     OlConn Conn;
+    OlHsClient Hs;
 
     // World session. WorldEpoch is 0 until the server has placed us in a world.
     WORD    WorldEpoch;
@@ -143,6 +145,7 @@ public:
         appMemzero(&ServerAddr, sizeof(ServerAddr));
         appMemzero(SessionToken, sizeof(SessionToken));
         appMemzero(&Conn, sizeof(Conn));
+        appMemzero(&Hs, sizeof(Hs));
     }
 
     // Connect via Steam P2P to the given host SteamID.

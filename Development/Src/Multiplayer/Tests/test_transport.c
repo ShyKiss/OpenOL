@@ -1,6 +1,7 @@
 /* Unit test for ol_transport: two connections over a lossy, reordering, duplicating
    virtual link, plus random datagrams. Built and run by test_relay.py under ASan/UBSan. */
 #include "ol_transport.h"
+#include "third_party/monocypher/monocypher.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,15 @@ static void link_send(void *user, const uint8_t *d, int len) {
     }
 }
 
+/* The two ends of a connection, in opposite directions. */
+static void key_pair(OlConn *c, int side) {
+    uint8_t k0[32], k1[32];
+    memset(k0, 0xA5, 32);
+    memset(k1, 0x5A, 32);
+    if (side) ol_conn_set_keys(c, k1, k0);
+    else      ol_conn_set_keys(c, k0, k1);
+}
+
 typedef struct {
     int next_expected;
     int state_seen;
@@ -63,7 +73,7 @@ static void pump(OlConn *conn, Rx *rx, int to) {
     for (i = 0; i < g_wire_n[to]; i++) {
         Wire *w = &g_wire[to][i];
         if (w->arrives <= g_now)
-            CHECK(ol_conn_on_datagram(conn, g_now, w->data, w->len, deliver, rx) == 1);
+            ol_conn_on_datagram(conn, g_now, w->data, w->len, deliver, rx);  /* 0 for a duplicate */
         else
             g_wire[to][kept++] = *w;
     }
@@ -81,8 +91,8 @@ static double run(int loss, int dup, double latency, double jitter, int total) {
     g_wire_n[0] = g_wire_n[1] = 0;
     g_now = 1000.0;
     started = g_now;
-    ol_conn_reset(&a, 42);
-    ol_conn_reset(&b, 42);
+    ol_conn_reset(&a, 42); key_pair(&a, 0);
+    ol_conn_reset(&b, 42); key_pair(&b, 1);
     memset(&ra, 0, sizeof(ra));
     memset(&rb, 0, sizeof(rb));
     ra.last_state = rb.last_state = 0;
@@ -128,7 +138,7 @@ static void test_limits(void) {
     static OlConn c;
     uint8_t big[OL_MAX_MSG + 1];
     int i;
-    ol_conn_reset(&c, 1);
+    ol_conn_reset(&c, 1); key_pair(&c, 0);
     memset(big, 0, sizeof(big));
     CHECK(!ol_conn_send(&c, OL_LANE_RELIABLE, big, 0));
     CHECK(!ol_conn_send(&c, OL_LANE_RELIABLE, big, OL_MAX_MSG + 1));
@@ -148,8 +158,8 @@ static void test_wrong_conn_ignored(void) {
     memset(d, 0, sizeof(d));
     d[0] = OL_MAGIC;
     d[1] = 99;
-    ol_conn_reset(&a, 1);
-    ol_conn_reset(&b, 1);
+    ol_conn_reset(&a, 1); key_pair(&a, 0);
+    ol_conn_reset(&b, 1); key_pair(&b, 1);
     CHECK(ol_conn_on_datagram(&a, 0.0, d, sizeof(d), deliver, &rx) == 0);
     CHECK(ol_conn_on_datagram(&a, 0.0, d, OL_HEADER_BYTES - 1, deliver, &rx) == 0);
     ol_conn_free(&a);
@@ -164,9 +174,9 @@ static void ignore(void *user, int lane, uint8_t *msg, int len) {
 static void test_fuzz(void) {
     static OlConn c;
     int i;
-    ol_conn_reset(&c, 7);
+    ol_conn_reset(&c, 7); key_pair(&c, 0);
     for (i = 0; i < 300000; i++) {
-        uint8_t d[OL_MAX_DATAGRAM];
+        uint8_t d[OL_MAX_DATAGRAM], nonce[24], key[32];
         int len = OL_HEADER_BYTES + rnd(OL_MAX_DATAGRAM - OL_HEADER_BYTES + 1), j;
         for (j = 0; j < len; j++) d[j] = (uint8_t)rnd(256);
         d[0] = OL_MAGIC;
@@ -178,6 +188,14 @@ static void test_fuzz(void) {
             d[OL_HEADER_BYTES + 3] = (uint8_t)rnd(40);
             d[OL_HEADER_BYTES + 4] = 0;
         }
+        /* Garbage that does not authenticate never reaches the parser. */
+        CHECK(ol_conn_on_datagram(&c, i * 0.001, d, len, ignore, NULL) == 0);
+        /* Authentic garbage does, with the key of the other end of key_pair(). */
+        memset(key, 0x5A, 32);
+        memset(nonce, 0, 24);
+        memcpy(d + 9, &i, 4);
+        memcpy(nonce, &i, 4);
+        crypto_aead_lock(d + 29, d + 13, key, nonce, d, 13, d + 29, len - 29);
         CHECK(ol_conn_on_datagram(&c, i * 0.001, d, len, ignore, NULL) == 1);
         if (i % 16 == 0) {
             ol_conn_send(&c, OL_LANE_RELIABLE, d, 20);

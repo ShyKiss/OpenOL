@@ -362,14 +362,8 @@ void AMultiplayerController::OnConnected()
     GMpConn.WorldEpoch = 0;
     GMpConn.SimOwnerID = 0;
     GMpConn.bSkipNextEnter = FALSE;
-    if (GIsSimNode)
-    {
-        // Goes to the world the server names rather than reporting its own.
-        BYTE Hello[2] = { CH_SESS, SESS_SIM_HELLO };
-        GMpConn.SendBinary(Hello, 2);
-        return;
-    }
-    if (GMultiplayerHero)
+    // The simulator goes to the world the server names rather than reporting its own.
+    if (GMultiplayerHero && !GIsSimNode)
         SendSessionEnter(0, CurrentCheckpointName());
 }
 

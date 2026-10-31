@@ -2,7 +2,8 @@
     SimNode.cpp - headless process that runs enemy AI for a room.
 
     OLGame.exe server OLEntry?Game=Multiplayer.MultiplayerGame -simnode
-        -simaddr=<ip> -simport=<port> -simroom=<code> [-simpass=<password>]
+        -simaddr=<ip> -simport=<port> -simroom=<code>
+    The relay and this process must share OPENOL_SIM_SECRET in their environment.
 
     Behaves as an ordinary client that follows the room's world, so triggers and
     checkpoints run the same Kismet as in the game. Differences: nothing renders,
@@ -221,7 +222,10 @@ void SimNode_Init()
     GMpConn.IP       = Parse(CmdLine, TEXT("simaddr="), Value) ? Value : FString(TEXT("127.0.0.1"));
     GMpConn.UdpPort  = Parse(CmdLine, TEXT("simport="), Value) ? Value : FString(TEXT("7777"));
     GMpConn.RoomCode = Parse(CmdLine, TEXT("simroom="), Value) ? Value : FString(TEXT("DEFAULT"));
-    GMpConn.Password = Parse(CmdLine, TEXT("simpass="), Value) ? Value : FString();
+    // Taken from the environment so that it stays out of the process list.
+    TCHAR Secret[128] = {0};
+    appGetEnvironmentVariable(TEXT("OPENOL_SIM_SECRET"), Secret, ARRAY_COUNT(Secret));
+    GMpConn.Password = Secret;
     GMpConn.Username = TEXT("SimNode");
     // Same as hosting: the caller's address counts, not the player's ini.
     GMpConn.bHostMode = TRUE;

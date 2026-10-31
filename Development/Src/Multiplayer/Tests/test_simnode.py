@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End to end: standalone relay, a real -simnode process and a scripted player.
 
-Needs the game install and the built OLGame.exe (no display or GPU), takes about 3 minutes.
+Needs the game install and the built OLGame.exe (no display or GPU), takes 3 to 4 minutes.
 
     python3 Tests/test_simnode.py
 """
@@ -44,9 +44,12 @@ class Session:
         self.owner = None
 
     def run(self, seconds, at=NEAR_TRIGGER):
+        self.run_until(lambda: False, seconds, at)
+
+    def run_until(self, done, seconds, at=NEAR_TRIGGER):
         end = time.monotonic() + seconds
         next_ping = 0
-        while time.monotonic() < end:
+        while time.monotonic() < end and not done():
             self.player.send(P["CH_HERO"], P["HERO_STATE"], hero_state(*at))
             if time.monotonic() > next_ping:
                 next_ping = time.monotonic() + 2
@@ -72,25 +75,26 @@ class Session:
 
 def check(condition, what):
     print(("ok    " if condition else "FAIL  ") + what, flush=True)
-    return condition
+    return bool(condition)
 
 
 def scenario(sim):
     results = []
     s = Session()
     s.enter(PRISON)
-    s.run(15)
+    # The simulator loads the whole map first, up to a minute with a cold disk cache.
+    s.run_until(lambda: s.spawned, 90)
     results.append(check(s.owner != s.player.player_id and s.owner, "simulator owns the AI of a new world"))
     results.append(check(s.spawned and not s.soldiers(), "checkpoint Kismet spawned its scripted enemy: %s" % s.spawned))
 
     s.fire()
-    s.run(25)
+    s.run(30)
     results.append(check(len(s.soldiers()) == 1, "trigger spawned one soldier: %s" % s.soldiers()))
     results.append(check(s.hits > 0, "soldier attacked the player, %d events" % s.hits))
 
     s.spawned, s.hits = [], 0
     s.enter(PRISON, reset=True)
-    s.run(8)
+    s.run_until(lambda: s.spawned, 30)
     s.fire()
     s.run(5)
     results.append(check(len(s.soldiers()) == 1, "after a world reset the trigger works again, no duplicates: %s" % s.spawned))
@@ -102,12 +106,25 @@ def scenario(sim):
     # Fired while the map is still loading on the simulator.
     s.run(1)
     s.fire()
-    s.run(40)
+    s.run_until(lambda: s.soldiers(), 90)
+    s.run(3)
     results.append(check(len(s.soldiers()) == 1, "trigger during map load is applied after it: %s" % s.spawned))
 
     results.append(check(sim.poll() is None, "simulator still running"))
     s.player.close()
     return all(results)
+
+
+def wait_connected():
+    end = time.monotonic() + 180
+    while time.monotonic() < end:
+        if os.path.exists(LOG):
+            with open(LOG, "rb") as f:
+                if b"MpConn: Connected" in f.read():
+                    time.sleep(1)
+                    return
+        time.sleep(1)
+    raise AssertionError("simulator did not connect")
 
 
 def main():
@@ -117,10 +134,14 @@ def main():
                           stdout=subprocess.DEVNULL)
     subprocess.check_call(["cmake", "--build", work], stdout=subprocess.DEVNULL)
     relay = subprocess.Popen([work + "/OpenOL_Relay", "--port", str(t.PORT)], cwd=work, stdin=subprocess.DEVNULL,
+                             env=dict(os.environ, OPENOL_SIM_SECRET=t.SIM_SECRET),
                              stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     time.sleep(0.5)
+    if os.path.exists(LOG):
+        os.remove(LOG)
     shutil.copy(ROOT + "/Binaries/Win64/OLGame.exe", bin_dir + "/" + EXE)
-    env = dict(os.environ, WINEPREFIX=os.environ.get("WINEPREFIX", os.path.expanduser("~/OL1Editor")), WINEDEBUG="-all")
+    env = dict(os.environ, WINEPREFIX=os.environ.get("WINEPREFIX", os.path.expanduser("~/OL1Editor")), WINEDEBUG="-all",
+               OPENOL_SIM_SECRET=t.SIM_SECRET)
     sim = subprocess.Popen(["xvfb-run", "-a", "wine", EXE, "server", "OLEntry?Game=Multiplayer.MultiplayerGame",
                             "-simnode", "-simaddr=127.0.0.1", "-simport=%d" % t.PORT, "-simroom=" + t.ROOM,
                             "-seekfreeloadingpcconsole", "-log", "-nosteam", "-nohomedir", "-nosound", "-unattended",
@@ -128,7 +149,8 @@ def main():
                            cwd=bin_dir, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.STDOUT)
     try:
-        time.sleep(20)
+        # Loading takes from seconds to a minute depending on the disk cache.
+        wait_connected()
         return 0 if scenario(sim) else 1
     finally:
         subprocess.call(["pkill", "-f", r"^[^ ]*" + EXE.replace(".", r"\.")])

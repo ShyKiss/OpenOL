@@ -283,9 +283,26 @@ void FMpConnection::OnReceivedData(FIpAddr SrcAddr, BYTE* Data, INT Count)
         return;
     }
 
-    // Outside a session the server only sends these two.
-    if (Data[0] == SRV_READY || Data[0] == SRV_HELLO_FAIL)
-        HandleMessage(Data, Count);
+    if (bIsConnected)
+        return;
+
+    // Outside a session the server only takes part in the handshake.
+    if (Data[0] == OL_HS_CHALLENGE)
+    {
+        // The simulator proves the server's secret instead of a room password.
+        BYTE Auth[OL_HS_AUTH_MAX];
+        const INT Len = ol_hs_client_auth(&Hs, Data, Count, TCHAR_TO_ANSI(*RoomCode), TCHAR_TO_ANSI(*Password),
+            GIsSimNode ? OL_ROLE_SIM : OL_ROLE_PLAYER, bHasSessionToken ? SessionToken : NULL, Auth);
+        if (Len > 0)
+            SendTo(ServerAddr, Auth, Len);
+    }
+    else if (Data[0] == OL_HS_RESULT)
+    {
+        BYTE Msg[OL_HS_RESULT_MAX];
+        const INT Len = ol_hs_client_result(&Hs, Data, Count, Msg);
+        if (Len > 0)
+            HandleMessage(Msg, Len);
+    }
 }
 
 void FMpConnection::HandleMessage(BYTE* Data, INT Count)
@@ -339,7 +356,10 @@ void FMpConnection::HandleMessage(BYTE* Data, INT Count)
                         QWORD ConnId = 0;
                         appMemcpy(&ConnId, Payload + TokenOffset + 32, 8);
                         if (ConnId != Conn.conn_id)
+                        {
                             ol_conn_reset(&Conn, ConnId);
+                            ol_conn_set_keys(&Conn, Hs.c2s_key, Hs.s2c_key);
+                        }
                     }
                 }
                 else
@@ -361,6 +381,15 @@ void FMpConnection::HandleMessage(BYTE* Data, INT Count)
                     GMultiplayerController->ServerName  = ServerName;
                     GMultiplayerController->OnlineCount = OnlineCount;
                 }
+            }
+
+            if (PktType == SRV_HELLO_FAIL && PayloadLen >= 1)
+            {
+                TCHAR Reason[256] = {0};
+                const INT ReasonLen = Min((INT)Payload[0], Min(PayloadLen - 1, 255));
+                for (INT i = 0; i < ReasonLen; i++)
+                    Reason[i] = (TCHAR)Payload[1 + i];
+                debugf(NAME_Log, TEXT("MpConn: Server refused the connection: %s"), Reason);
             }
 
             // SRV_ONLINE_COUNT — update GMpConn.
@@ -490,28 +519,11 @@ void FMpConnection::Tick(FLOAT DeltaTime)
         {
             HelloTimer = 2.0f;
             HelloAttempt++;
-            // Build HELLO: include session token (hex64) if we have one for NAT rebind
-            FString Msg;
-            if (bHasSessionToken)
-            {
-                // Encode 32-byte token as 64 lowercase hex chars
-                TCHAR HexToken[65] = {0};
-                const TCHAR HexChars[] = TEXT("0123456789abcdef");
-                for (INT i = 0; i < 32; i++)
-                {
-                    HexToken[i * 2]     = HexChars[(SessionToken[i] >> 4) & 0xF];
-                    HexToken[i * 2 + 1] = HexChars[SessionToken[i] & 0xF];
-                }
-                Msg = FString::Printf(TEXT("HELLO,%s,%s,%s\n"), *RoomCode, *Password, HexToken);
-            }
-            else
-            {
-                Msg = FString::Printf(TEXT("HELLO,%s,%s\n"), *RoomCode, *Password);
-            }
             debugf(NAME_Log, TEXT("MpConn: HELLO #%d -> %s:%s room='%s' P2P=%d token=%d"),
                 HelloAttempt, *IP, *UdpPort, *RoomCode, (INT)bP2PMode, (INT)bHasSessionToken);
-            FTCHARToANSI Conv(*Msg);
-            SendTo(ServerAddr, (BYTE*)(ANSICHAR*)Conv, Conv.Length());
+            BYTE Hello[OL_HS_HELLO_BYTES];
+            ol_hs_client_hello(Hello);
+            SendTo(ServerAddr, Hello, OL_HS_HELLO_BYTES);
         }
         return;
     }
