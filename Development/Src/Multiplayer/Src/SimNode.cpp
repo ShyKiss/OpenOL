@@ -4,6 +4,7 @@
     OLGame.exe server OLEntry?Game=Multiplayer.MultiplayerGame -simnode
         -simaddr=<ip> -simport=<port> -simroom=<code>
     The relay and this process must share OPENOL_SIM_SECRET in their environment.
+    OPENOL_SERVER_KEY, if set, is the key the relay must have.
 
     Behaves as an ordinary client that follows the room's world, so triggers and
     checkpoints run the same Kismet as in the game. Differences: nothing renders,
@@ -226,6 +227,10 @@ void SimNode_Init()
     TCHAR Secret[128] = {0};
     appGetEnvironmentVariable(TEXT("OPENOL_SIM_SECRET"), Secret, ARRAY_COUNT(Secret));
     GMpConn.Password = Secret;
+    // Optional: the relay's key, for a relay on another machine.
+    TCHAR ServerKey[80] = {0};
+    appGetEnvironmentVariable(TEXT("OPENOL_SERVER_KEY"), ServerKey, ARRAY_COUNT(ServerKey));
+    GMpConn.ConfiguredServerKey = ServerKey;
     GMpConn.Username = TEXT("SimNode");
     // Same as hosting: the caller's address counts, not the player's ini.
     GMpConn.bHostMode = TRUE;

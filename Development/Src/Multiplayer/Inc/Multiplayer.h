@@ -91,6 +91,10 @@ public:
     // Reliable transport session; conn_id comes from SRV_READY, keys from the handshake.
     OlConn Conn;
     OlHsClient Hs;
+    // Key of the server being connected to: pinned per address like an SSH host key.
+    FString ConfiguredServerKey;   // simulator only: from OPENOL_SERVER_KEY
+    FString PendingServerKey;      // seen in the challenge, saved once the handshake succeeds
+    UBOOL   bServerKeyWarned;
 
     // World session. WorldEpoch is 0 until the server has placed us in a world.
     WORD    WorldEpoch;
@@ -135,7 +139,7 @@ public:
         , HelloTimer(0.f), HeartbeatTimer(5.f)
         , SyncInteractable(TRUE), SyncEnemies(TRUE)
         , SyncMatinees(TRUE), SyncPickups(TRUE), SpeedrunMode(FALSE)
-        , bHasSessionToken(FALSE)
+        , bServerKeyWarned(FALSE), bHasSessionToken(FALSE)
         , WorldEpoch(0), SimOwnerID(0), bInBaseline(FALSE), bTravelPending(FALSE), bSkipNextEnter(FALSE)
         , OnlineCount(0), PingTimer(5.f)
         , bP2PMode(FALSE), HostSteamID(0)
@@ -166,6 +170,10 @@ public:
 
     // FUdpLink override — receives all incoming UDP datagrams.
     virtual void OnReceivedData(FIpAddr SrcAddr, BYTE* Data, INT Count);
+
+    // TRUE if a challenge carrying this key may be answered.
+    UBOOL CheckServerKey(const BYTE* Key);
+    void RememberServerKey();
 
     // Handles one message: a raw SRV packet or a message from the transport.
     void HandleMessage(BYTE* Data, INT Count);

@@ -74,6 +74,23 @@ class Crypto:
         self.lib.crypto_x25519(out, priv, pub)
         return out.raw
 
+    def argon2id(self, password, salt):
+        class Config(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint32) for n in ("algorithm", "nb_blocks", "nb_passes", "nb_lanes")]
+
+        class Inputs(ctypes.Structure):
+            _fields_ = [("password", ctypes.c_char_p), ("salt", ctypes.c_char_p),
+                        ("password_size", ctypes.c_uint32), ("salt_size", ctypes.c_uint32)]
+
+        class Extras(ctypes.Structure):
+            _fields_ = [("key", ctypes.c_void_p), ("ad", ctypes.c_void_p),
+                        ("key_size", ctypes.c_uint32), ("ad_size", ctypes.c_uint32)]
+
+        out, work = ctypes.create_string_buffer(32), ctypes.create_string_buffer(16384 * 1024)
+        self.lib.crypto_argon2(out, ctypes.c_uint32(32), work, Config(2, 16384, 3, 1),
+                               Inputs(password, salt, len(password), len(salt)), Extras())
+        return out.raw
+
     def aead_lock(self, key, nonce, ad, plain):
         mac, out = ctypes.create_string_buffer(16), ctypes.create_string_buffer(max(len(plain), 1))
         self.lib.crypto_aead_lock(out, mac, key, nonce, ad, ctypes.c_size_t(len(ad)), plain, ctypes.c_size_t(len(plain)))
@@ -125,14 +142,27 @@ class Client:
         pub = crypto.x25519_public(priv)
         root = hashlib.blake2b(crypto.x25519(priv, server_pub) + pub + server_pub, digest_size=32).digest()
         derive = lambda label: hashlib.blake2b(label, key=root, digest_size=32).digest()
-        self.c2s, self.s2c, self.result_key = derive(b"openol c2s"), derive(b"openol s2c"), derive(b"openol result")
-        secret_key = hashlib.blake2b(self.password.encode(), digest_size=32).digest()
+        self.result_key = derive(b"openol result")
+        self.hs_priv, self.hs_root, self.server_pub = priv, root, server_pub
+        if self.role == 1 or not self.password:
+            secret_key = hashlib.blake2b(self.password.encode(), digest_size=32).digest()
+        else:
+            secret_key = crypto.argon2id(self.password.encode(), server_pub)
         proof = hashlib.blake2b(root + cookie, key=secret_key, digest_size=32).digest()
         plain = (bytes([self.role]) + proof + bytes([1 if token else 0]) + (token or bytes(32))
                  + bytes([len(self.room)]) + self.room.encode())
         head = bytes([P["OL_HS_AUTH"], HS_VERSION]) + pub + cookie
         mac, sealed = crypto.aead_lock(derive(b"openol auth"), bytes(24), head, plain)
         return head + mac + sealed
+
+    def open_result(self, data):
+        msg = crypto.aead_unlock(self.result_key, bytes(24), data[:34], data[34:50], data[50:])
+        session_pub = data[2:34]
+        if msg is not None and session_pub != bytes(32):
+            key = hashlib.blake2b(self.hs_root + crypto.x25519(self.hs_priv, session_pub), digest_size=32).digest()
+            self.c2s = hashlib.blake2b(b"openol c2s", key=key, digest_size=32).digest()
+            self.s2c = hashlib.blake2b(b"openol s2c", key=key, digest_size=32).digest()
+        return msg
 
     def next_of_type(self, first_byte):
         """Next raw datagram starting with first_byte, skipping session traffic."""
@@ -159,7 +189,7 @@ class Client:
             if data[0] == P["OL_HS_CHALLENGE"]:
                 self.sock.send(self.auth_packet(data, token))
             elif data[0] == P["OL_HS_RESULT"]:
-                return crypto.aead_unlock(self.result_key, bytes(24), data[:2], data[2:18], data[18:])
+                return self.open_result(data)
         return None
 
     def enter(self, cp="CP_A", persist="MapA", epoch=0, reset=False):
@@ -292,9 +322,10 @@ class RelayTest(unittest.TestCase):
 
     def setUp(self):
         self.clients = []
-        db = os.path.join(self.build_dir, "relay.db")
-        if os.path.exists(db):
-            os.remove(db)
+        for name in ("relay.db", "relay.db.key"):
+            path = os.path.join(self.build_dir, name)
+            if os.path.exists(path):
+                os.remove(path)
         self.log = tempfile.TemporaryFile()
         self.server = subprocess.Popen([self.exe, "--port", str(PORT)], cwd=self.build_dir,
                                        env=dict(os.environ, OPENOL_SIM_SECRET=SIM_SECRET),
@@ -790,15 +821,79 @@ class RelayTest(unittest.TestCase):
 
     # --- Handshake and session security ---
 
-    def restart_with_room(self, code, password):
+    def stop_server(self):
         self.server.terminate()
         self.server.wait()
-        with open(os.path.join(self.build_dir, "relay.db"), "w") as f:
-            json.dump({"rooms": [{"code": code, "password": password, "trusted": [], "bans": []}], "bans": []}, f)
+
+    def start_server(self):
         self.server = subprocess.Popen([self.exe, "--port", str(PORT)], cwd=self.build_dir,
                                        env=dict(os.environ, OPENOL_SIM_SECRET=SIM_SECRET),
                                        stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT)
-        time.sleep(0.3)
+        # Answers only after startup, which may include hashing passwords of an old database.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("127.0.0.1", PORT))
+        for _ in range(100):
+            probe.send(bytes([P["OL_HS_HELLO"], HS_VERSION]) + bytes(62))
+            try:
+                if select.select([probe], [], [], 0.2)[0] and probe.recv(4096):
+                    break
+            except ConnectionRefusedError:
+                time.sleep(0.1)
+        probe.close()
+
+    def db_text(self):
+        with open(os.path.join(self.build_dir, "relay.db")) as f:
+            return f.read()
+
+    def test_server_key_survives_restart(self):
+        first = self.client(enter=False)
+        key = first.server_pub
+        self.stop_server()
+        self.start_server()
+        again = self.client(enter=False)
+        self.assertEqual(again.server_pub, key)
+        key_file = os.path.join(self.build_dir, "relay.db.key")
+        self.assertEqual(os.stat(key_file).st_mode & 0o077, 0, "only the owner may read the key")
+
+    def test_plain_password_in_old_database_is_hashed(self):
+        self.restart_with_room("SAFE", "hunter2")
+        self.assertNotIn("hunter2", self.db_text())
+        self.assertIn("$ol1$", self.db_text())
+        self.assertTrue(self.client(enter=False, room="SAFE", password="hunter2").player_id)
+        self.stop_server()
+        self.start_server()
+        self.assertTrue(self.client(enter=False, room="SAFE", password="hunter2").player_id)
+        with self.assertRaises(AssertionError):
+            self.clients.append(Client(room="SAFE", password="hunter3"))
+
+    def test_stored_hash_cannot_be_typed_as_password(self):
+        self.restart_with_room("SAFE", "hunter2")
+        stored = json.loads(self.db_text())["rooms"][0]["password"]
+        with self.assertRaises(AssertionError):
+            self.clients.append(Client(room="SAFE", password=stored))
+
+    def test_session_keys_do_not_come_from_the_server_key_alone(self):
+        # Forward secrecy: the same client key gets different session keys each time.
+        results = []
+        for _ in range(2):
+            d = self.client(enter=False)
+            d.sock.send(d.auth_packet(d.fresh_challenge()))
+            results.append(d.next_of_type(P["OL_HS_RESULT"])[2:34])
+        self.assertNotEqual(results[0], results[1])
+        self.assertNotEqual(results[0], bytes(32))
+
+    def test_refusal_has_no_session_key(self):
+        self.restart_with_room("SAFE", "hunter2")
+        c = self.client(enter=False, room="SAFE", password="hunter2")
+        c.password = "wrong"
+        c.sock.send(c.auth_packet(c.fresh_challenge()))
+        self.assertEqual(c.next_of_type(P["OL_HS_RESULT"])[2:34], bytes(32))
+
+    def restart_with_room(self, code, password):
+        self.stop_server()
+        with open(os.path.join(self.build_dir, "relay.db"), "w") as f:
+            json.dump({"rooms": [{"code": code, "password": password, "trusted": [], "bans": []}], "bans": []}, f)
+        self.start_server()
 
     def test_room_password_is_proved_not_sent(self):
         self.restart_with_room("SAFE", "hunter2")
@@ -808,6 +903,8 @@ class RelayTest(unittest.TestCase):
         self.assertTrue(good.player_id)
         challenge = bytes([P["OL_HS_CHALLENGE"], HS_VERSION]) + bytes(48)
         self.assertNotIn(b"hunter2", good.auth_packet(challenge))
+        with open(os.path.join(self.build_dir, "relay.db")) as f:
+            self.assertNotIn("hunter2", f.read())
 
     def test_password_is_required_again_from_the_same_address(self):
         # No trust by IP: everyone arriving through the Steam bridge shares 127.0.0.1.
@@ -843,7 +940,7 @@ class RelayTest(unittest.TestCase):
         for _ in range(2):
             c.sock.send(auth)
             data = c.next_of_type(P["OL_HS_RESULT"])
-            answers.append(crypto.aead_unlock(c.result_key, bytes(24), data[:2], data[2:18], data[18:]))
+            answers.append(c.open_result(data))
         self.assertEqual(answers[0], answers[1])
 
     def test_token_resumes_session_only_with_the_right_token(self):

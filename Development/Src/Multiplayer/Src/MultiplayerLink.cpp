@@ -22,6 +22,7 @@
 #include "UnSocket.h"
 #include "..\..\OnlineSubsystemSteamworks\Inc\OnlineSubsystemSteamworks.h"
 #include "RelayThread.h"    // GRelayThread (for port) + P2PBridge.h (via RelayThread.h)
+#include "MultiplayerHUD.h"
 
 #if WITH_UE3_NETWORKING
 
@@ -287,8 +288,10 @@ void FMpConnection::OnReceivedData(FIpAddr SrcAddr, BYTE* Data, INT Count)
         return;
 
     // Outside a session the server only takes part in the handshake.
-    if (Data[0] == OL_HS_CHALLENGE)
+    if (Data[0] == OL_HS_CHALLENGE && Count == OL_HS_CHALLENGE_BYTES)
     {
+        if (!CheckServerKey(ol_hs_challenge_key(Data)))
+            return;
         // The simulator proves the server's secret instead of a room password.
         BYTE Auth[OL_HS_AUTH_MAX];
         const INT Len = ol_hs_client_auth(&Hs, Data, Count, TCHAR_TO_ANSI(*RoomCode), TCHAR_TO_ANSI(*Password),
@@ -303,6 +306,70 @@ void FMpConnection::OnReceivedData(FIpAddr SrcAddr, BYTE* Data, INT Count)
         if (Len > 0)
             HandleMessage(Msg, Len);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Server key pinning
+// ---------------------------------------------------------------------------
+
+static const TCHAR* GKnownServersSection = TEXT("OLGame.OLKnownServers");
+
+// What the pin belongs to; empty means nothing on this path can be intercepted.
+static FString ServerKeyId(const FMpConnection& Conn)
+{
+    if (GP2PBridgeClient.IsRunning())
+        return FString::Printf(TEXT("steam:%llu"), (unsigned long long)Conn.HostSteamID);
+    if (Conn.IP == TEXT("127.0.0.1") || Conn.IP == TEXT("localhost"))
+        return FString();
+    return FString::Printf(TEXT("%s:%s"), *Conn.IP, *Conn.UdpPort);
+}
+
+static FString KeyToHex(const BYTE* Key)
+{
+    FString Out;
+    for (INT i = 0; i < 32; i++)
+        Out += FString::Printf(TEXT("%02x"), Key[i]);
+    return Out;
+}
+
+UBOOL FMpConnection::CheckServerKey(const BYTE* Key)
+{
+    PendingServerKey = KeyToHex(Key);
+
+    FString Expected = ConfiguredServerKey;
+    const FString Id = ServerKeyId(*this);
+    const FString IniFile = appGameConfigDir() + TEXT("OLMultiplayer.ini");
+    if (Expected.Len() == 0 && Id.Len() > 0)
+        GConfig->GetString(GKnownServersSection, *Id, Expected, *IniFile);
+
+    if (Expected.Len() == 0 || Expected == PendingServerKey)
+        return TRUE;
+
+    // Keep trying: a forged challenge must not be able to end the real connection.
+    if (!bServerKeyWarned)
+    {
+        bServerKeyWarned = TRUE;
+        debugf(NAME_Warning, TEXT("MpConn: Server key changed for %s: expected %s, got %s. Not connecting. If the server was reinstalled, remove its line from [%s] in OLMultiplayer.ini"),
+            *Id, *Expected, *PendingServerKey, GKnownServersSection);
+        if (GMultiplayerController)
+            HUD_AddNotification(Cast<AMultiplayerHUD>(GMultiplayerController->myHUD),
+                FString::Printf(TEXT("Server key changed, not connecting to %s. See the log."), *IP));
+    }
+    return FALSE;
+}
+
+void FMpConnection::RememberServerKey()
+{
+    const FString Id = ServerKeyId(*this);
+    if (GIsSimNode || Id.Len() == 0 || PendingServerKey.Len() == 0)
+        return;
+    const FString IniFile = appGameConfigDir() + TEXT("OLMultiplayer.ini");
+    FString Known;
+    if (GConfig->GetString(GKnownServersSection, *Id, Known, *IniFile) && Known == PendingServerKey)
+        return;
+    debugf(NAME_Log, TEXT("MpConn: First connection to %s, remembering its key %s"), *Id, *PendingServerKey);
+    GConfig->SetString(GKnownServersSection, *Id, *PendingServerKey, *IniFile);
+    GConfig->Flush(FALSE, *IniFile);
 }
 
 void FMpConnection::HandleMessage(BYTE* Data, INT Count)
@@ -371,6 +438,8 @@ void FMpConnection::HandleMessage(BYTE* Data, INT Count)
                 {
                     bIsConnected = TRUE;
                     HelloAttempt = 0;
+                    bServerKeyWarned = FALSE;
+                    RememberServerKey();
                     debugf(NAME_Log, TEXT("MpConn: Connected! PlayerID=%d server='%s' addr=%s:%s room='%s' P2P=%d"),
                         LocalPlayerID, *ServerName, *IP, *UdpPort, *RoomCode, (INT)bP2PMode);
                     if (GMultiplayerController)
@@ -390,6 +459,9 @@ void FMpConnection::HandleMessage(BYTE* Data, INT Count)
                 for (INT i = 0; i < ReasonLen; i++)
                     Reason[i] = (TCHAR)Payload[1 + i];
                 debugf(NAME_Log, TEXT("MpConn: Server refused the connection: %s"), Reason);
+                if (GMultiplayerController && HelloAttempt <= 1)
+                    HUD_AddNotification(Cast<AMultiplayerHUD>(GMultiplayerController->myHUD),
+                        FString::Printf(TEXT("Server refused the connection: %s"), Reason));
             }
 
             // SRV_ONLINE_COUNT — update GMpConn.

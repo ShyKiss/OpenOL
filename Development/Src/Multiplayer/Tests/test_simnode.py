@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End to end: standalone relay, a real -simnode process and a scripted player.
 
-Needs the game install and the built OLGame.exe (no display or GPU), takes 3 to 4 minutes.
+Needs the game install and the built OLGame.exe (no display or GPU), takes about 5 minutes.
 
     python3 Tests/test_simnode.py
 """
@@ -127,6 +127,38 @@ def wait_connected():
     raise AssertionError("simulator did not connect")
 
 
+def wrong_key_is_refused(work, bin_dir, env):
+    """A simulator configured with another server key must not even answer the challenge."""
+    log = OUTLAST + "/OLGame/Logs/simtest_key.log"
+    if os.path.exists(log):
+        os.remove(log)
+    sim = subprocess.Popen(sim_command("simtest_key.log"), cwd=bin_dir, stdin=subprocess.DEVNULL,
+                           env=dict(env, OPENOL_SERVER_KEY="00" * 32),
+                           stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    seen = b""
+    end = time.monotonic() + 180
+    while time.monotonic() < end and b"Server key changed" not in seen:
+        time.sleep(1)
+        if os.path.exists(log):
+            with open(log, "rb") as f:
+                seen = f.read()
+    time.sleep(3)
+    subprocess.call(["pkill", "-f", r"^[^ ]*" + EXE.replace(".", r"\.")])
+    sim.wait()
+    with open(log, "rb") as f:
+        seen = f.read()
+    os.remove(log)
+    return check(b"Server key changed" in seen and b"MpConn: Connected" not in seen,
+                 "simulator with a wrong server key does not connect")
+
+
+def sim_command(log_name):
+    return ["xvfb-run", "-a", "wine", EXE, "server", "OLEntry?Game=Multiplayer.MultiplayerGame",
+            "-simnode", "-simaddr=127.0.0.1", "-simport=%d" % t.PORT, "-simroom=" + t.ROOM,
+            "-seekfreeloadingpcconsole", "-log", "-nosteam", "-nohomedir", "-nosound", "-unattended",
+            "-nopause", "-forcelogflush", "LOG=" + log_name]
+
+
 def main():
     work = tempfile.mkdtemp(prefix="ol_simnode_test_")
     bin_dir = OUTLAST + "/Binaries/Win64"
@@ -142,16 +174,16 @@ def main():
     shutil.copy(ROOT + "/Binaries/Win64/OLGame.exe", bin_dir + "/" + EXE)
     env = dict(os.environ, WINEPREFIX=os.environ.get("WINEPREFIX", os.path.expanduser("~/OL1Editor")), WINEDEBUG="-all",
                OPENOL_SIM_SECRET=t.SIM_SECRET)
-    sim = subprocess.Popen(["xvfb-run", "-a", "wine", EXE, "server", "OLEntry?Game=Multiplayer.MultiplayerGame",
-                            "-simnode", "-simaddr=127.0.0.1", "-simport=%d" % t.PORT, "-simroom=" + t.ROOM,
-                            "-seekfreeloadingpcconsole", "-log", "-nosteam", "-nohomedir", "-nosound", "-unattended",
-                            "-nopause", "-forcelogflush", "LOG=simtest.log"],
-                           cwd=bin_dir, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.STDOUT)
+    sim = subprocess.Popen(sim_command("simtest.log"), cwd=bin_dir, env=env, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     try:
         # Loading takes from seconds to a minute depending on the disk cache.
         wait_connected()
-        return 0 if scenario(sim) else 1
+        ok = scenario(sim)
+        subprocess.call(["pkill", "-f", r"^[^ ]*" + EXE.replace(".", r"\.")])
+        sim.wait()
+        ok = wrong_key_is_refused(work, bin_dir, env) and ok
+        return 0 if ok else 1
     finally:
         subprocess.call(["pkill", "-f", r"^[^ ]*" + EXE.replace(".", r"\.")])
         time.sleep(2)
