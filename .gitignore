@@ -24,6 +24,7 @@
 !/Development/Src/Multiplayer/Src/
 !/Development/Src/Multiplayer/Tests/
 !/Development/Src/Multiplayer/*.md
+/Development/Src/Multiplayer/ARCHITECTURE*.md
 !/Development/Src/Multiplayer/server
 
 *.exe
