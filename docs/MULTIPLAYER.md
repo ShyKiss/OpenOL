@@ -87,7 +87,7 @@ The file is rewritten when settings are changed through commands/GUI and on serv
 
 On first start the relay creates `relay.db.key` next to `relay.db` and logs `Server key: <hex>`. Clients remember this key and refuse the server if it changes.
 
-- Keep this file and back it up. In a container, store `relay.db` and `relay.db.key` on a volume.
+- Keep this file and back it up. In a container, keep it on a volume as described in [HOSTING.md](https://github.com/ShyKiss/OpenOL-Relay/blob/main/docs/HOSTING.md).
 - If the key is lost, players must delete the server's line from their `OLMultiplayer.ini`, and room passwords must be set again with `setpw`.
 
 ### Commands

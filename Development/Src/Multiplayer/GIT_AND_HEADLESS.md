@@ -114,9 +114,9 @@ OLGame.exe server <map>?Game=...?ListenPort=7777 -log -nosteam -nohomedir
 
 ### Симулятор ИИ
 
-`Targets/run_simnode.sh [--relay] [port] [room] [password]` запускает `-simnode` из каталога Steam с `OLGame.exe` этого дерева. С `--relay` заодно поднимает standalone relay. Лог: `OLGame/Logs/simnode.log`.
+`Targets/run_simnode.sh [--relay] [port] [room]` запускает `-simnode` из каталога Steam с `OLGame.exe` этого дерева. С `--relay` заодно поднимает standalone relay. Лог: `OLGame/Logs/simnode.log`.
 
-`python3 Tests/test_simnode.py` (около 3 минут, нужна установленная игра): настоящие relay и симулятор, игрок эмулируется скриптом.
+`python3 Tests/test_simnode.py` (около 5 минут, нужна установленная игра): настоящие relay и симулятор, игрок эмулируется скриптом.
 
 ### 5. Два клиента и сервер без окна
 

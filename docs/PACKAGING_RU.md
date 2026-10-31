@@ -32,6 +32,7 @@ cd $OUTLASTSRC
 │   ├── Config/
 │   │   ├── DefaultEngine.ini
 │   │   ├── DefaultGame.ini
+│   │   ├── DefaultInput.ini
 │   │   ├── DefaultMultiplayer.ini
 │   │   └── DefaultUI.ini
 │   ├── CookedPCConsole/
@@ -48,6 +49,7 @@ cd $OUTLASTSRC
 │   │       ├── OLGame.u
 │   │       ├── OnlineSubsystemPC.u
 │   │       ├── OnlineSubsystemSteamworks.u
+│   │       ├── TASGame.u
 │   │       └── WinDrv.u
 │   └── Localization/
 │       ├── DEU/olgame.DEU

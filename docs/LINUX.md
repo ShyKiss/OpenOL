@@ -8,7 +8,26 @@ See also: [Building the mod](./BUILD.md)
 
 ---
 
-## 1. Install Visual Studio 2012 under Wine
+## Automated setup (recommended)
+
+`setup_wineprefix.sh` downloads VS 2012 and the DirectX SDK and sets up the whole Wine prefix:
+
+```sh
+WINEPREFIX=/path/to/prefix ./Development/Src/Targets/setup_wineprefix.sh
+```
+
+Then you can build right away:
+
+```sh
+cd Development/Src/Targets
+./build_wine.sh
+```
+
+---
+
+## Manual setup
+
+### 1. Install Visual Studio 2012 under Wine
 
 Wine version confirmed to work: **11.14**
 
@@ -33,17 +52,13 @@ If Visual Studio asks to restart, kill the processes instead:
 sudo pkill -9 -f "\.exe"
 ```
 
----
-
-## 2. Install DirectX SDK (June 2010)
+### 2. Install DirectX SDK (June 2010)
 
 ```sh
 wine DXSDK_Jun10.exe
 ```
 
----
-
-## 3. Building
+### 3. Building
 
 ```sh
 cd $OUTLASTSRC/Development/Src/Targets
@@ -54,7 +69,7 @@ See [BUILD.md](./BUILD.md) for the full list of build steps.
 
 ---
 
-## 4. Editor
+## Editor
 
 ```sh
 wine OLGame.exe editor -NoGADWarning

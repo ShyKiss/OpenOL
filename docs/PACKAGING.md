@@ -32,6 +32,7 @@ This produces `$OUTLASTSRC/PublishTemp/OpenOL.7z` (and `.zip`).
 │   ├── Config/
 │   │   ├── DefaultEngine.ini
 │   │   ├── DefaultGame.ini
+│   │   ├── DefaultInput.ini
 │   │   ├── DefaultMultiplayer.ini
 │   │   └── DefaultUI.ini
 │   ├── CookedPCConsole/
@@ -48,6 +49,7 @@ This produces `$OUTLASTSRC/PublishTemp/OpenOL.7z` (and `.zip`).
 │   │       ├── OLGame.u
 │   │       ├── OnlineSubsystemPC.u
 │   │       ├── OnlineSubsystemSteamworks.u
+│   │       ├── TASGame.u
 │   │       └── WinDrv.u
 │   └── Localization/
 │       ├── DEU/olgame.DEU

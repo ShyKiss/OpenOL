@@ -29,7 +29,7 @@ Once you have it, extract these folders into `$OUTLASTSRC`:
 └─── OLGame/          22.6 GB
 ```
 
-Then copy the `Development` and `OLGame` folders from this repository into `$OUTLASTSRC/`, replacing when asked.
+Then copy the `Development` and `OLGame` folders from this repository into `$OUTLASTSRC/`, replacing when asked. Clone this repository with `git clone --recursive`: the relay source in `Development/Src/Multiplayer/server` is a git submodule, and `OLGame.exe` needs it too.
 
 ---
 
@@ -94,16 +94,16 @@ Binaries/Win64/Editor/Release/UnrealEdCSharp.dll
 ## OpenOL Relay (standalone) — Linux
 
 ```bash
-cd $OUTLASTSRC/Development/Src/Multiplayer/server
+cd $OUTLASTSRC/Development/Src/Multiplayer/server/src
 
 # TUI build (console interface)
 ./build.sh
 
-# GUI build (ImGui + SDL2 + OpenGL)
+# TUI and GUI build (ImGui + SDL2 + OpenGL)
 ./build.sh --gui
 ```
 
-Output in `build/`:
+Output in `src/build/`:
 - `OpenOL_Relay` — TUI version
 - `OpenOL_Relay_GUI` — GUI version
 
@@ -118,28 +118,26 @@ cmake --build build
 ## OpenOL Relay (standalone) — Windows (cross-compile from Linux)
 
 ```bash
-cd $OUTLASTSRC/Development/Src/Multiplayer/server
+cd $OUTLASTSRC/Development/Src/Multiplayer/server/src
 
-# TUI build
-./build_win.sh
-
-# GUI build (requires Qt6 for mingw)
-export QT6_MINGW_DIR=/path/to/Qt/6.x.x/mingw_64
-./build_win.sh --gui
-```
-
-Output in `build_win/`:
-- `OpenOL_Relay.exe`
-- `OpenOL_Relay_GUI.exe` (if `--gui` was passed)
-
-**Manual CMake:**
-```bash
 cmake -S . -B build -G Ninja \
+  -DCMAKE_SYSTEM_NAME=Windows \
   -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
+
+Output in `src/build/`: `OpenOL_Relay.exe`.
+
+To also build the GUI (ImGui + Direct3D 9), use the 32-bit toolchain file. It needs `i686-w64-mingw32-gcc`:
+
+```bash
+cmake -S . -B build -G Ninja -DBUILD_GUI=ON -DCMAKE_TOOLCHAIN_FILE=./toolchain-mingw.cmake
+cmake --build build
+```
+
+On Windows itself, run `build_win.bat [--gui]` from the same folder. It needs cmake and ninja in `PATH`. Output: `dist/`.
 
 ---
 

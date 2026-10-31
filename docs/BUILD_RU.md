@@ -29,7 +29,7 @@
 └─── OLGame/          22.6 GB
 ```
 
-Затем скопируйте папки `Development` и `OLGame` из этого репозитория в `$OUTLASTSRC/`, подтверждая замену файлов.
+Затем скопируйте папки `Development` и `OLGame` из этого репозитория в `$OUTLASTSRC/`, подтверждая замену файлов. Клонируйте репозиторий через `git clone --recursive`: исходники relay в `Development/Src/Multiplayer/server` подключены как git-сабмодуль, и они нужны также для `OLGame.exe`.
 
 ---
 
@@ -94,16 +94,16 @@ Binaries/Win64/Editor/Release/UnrealEdCSharp.dll
 ## OpenOL Relay (отдельный) — Linux
 
 ```bash
-cd $OUTLASTSRC/Development/Src/Multiplayer/server
+cd $OUTLASTSRC/Development/Src/Multiplayer/server/src
 
 # TUI-сборка (консольный интерфейс)
 ./build.sh
 
-# GUI-сборка (ImGui + SDL2 + OpenGL)
+# Сборка TUI и GUI (ImGui + SDL2 + OpenGL)
 ./build.sh --gui
 ```
 
-Результат в `build/`:
+Результат в `src/build/`:
 - `OpenOL_Relay` — TUI-версия
 - `OpenOL_Relay_GUI` — GUI-версия
 
@@ -118,28 +118,26 @@ cmake --build build
 ## OpenOL Relay (отдельный) — Windows (кросс-компиляция с Linux)
 
 ```bash
-cd $OUTLASTSRC/Development/Src/Multiplayer/server
+cd $OUTLASTSRC/Development/Src/Multiplayer/server/src
 
-# TUI-сборка
-./build_win.sh
-
-# GUI-сборка (требует Qt6 для mingw)
-export QT6_MINGW_DIR=/path/to/Qt/6.x.x/mingw_64
-./build_win.sh --gui
-```
-
-Результат в `build_win/`:
-- `OpenOL_Relay.exe`
-- `OpenOL_Relay_GUI.exe` (если передан `--gui`)
-
-**Вручную через CMake:**
-```bash
 cmake -S . -B build -G Ninja \
+  -DCMAKE_SYSTEM_NAME=Windows \
   -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
+
+Результат в `src/build/`: `OpenOL_Relay.exe`.
+
+Чтобы собрать ещё и GUI (ImGui + Direct3D 9), используйте файл 32-битного тулчейна. Для него нужен `i686-w64-mingw32-gcc`:
+
+```bash
+cmake -S . -B build -G Ninja -DBUILD_GUI=ON -DCMAKE_TOOLCHAIN_FILE=./toolchain-mingw.cmake
+cmake --build build
+```
+
+На самой Windows запустите `build_win.bat [--gui]` из той же папки. Нужны cmake и ninja в `PATH`. Результат: `dist/`.
 
 ---
 
