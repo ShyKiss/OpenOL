@@ -261,7 +261,8 @@ void FShaderParameter::Bind(const FShaderParameterMap& ParameterMap,const TCHAR*
 		// Parameter not found — clear so IsBound() returns FALSE
 		BaseIndex = 0;
 		NumBytes = 0;
-		if (!bIsOptional)
+		// Without a renderer nothing executes the shader (headless server).
+		if (!bIsOptional && !GUsingNullRHI)
 		{
 			if (FName::SafeSuppressed(NAME_DevShaders))
 			{
@@ -308,7 +309,8 @@ void FShaderResourceParameter::Bind(const FShaderParameterMap& ParameterMap,cons
 		BaseIndex = 0;
 		NumResources = 0;
 		SamplerIndex = 0;
-		if (!bIsOptional)
+		// Without a renderer nothing executes the shader (headless server).
+		if (!bIsOptional && !GUsingNullRHI)
 		{
 			if (FName::SafeSuppressed(NAME_DevShaders))
 			{
