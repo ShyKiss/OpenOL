@@ -54,6 +54,7 @@
 /Binaries/Win64/OpenOL/settings.ini
 *.vcxproj.user
 
+*.obj
 *.exe
 *.u
 __pycache__/

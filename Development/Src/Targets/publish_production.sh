@@ -113,7 +113,8 @@ cd "$DEST"
 echo ""
 echo "Creating archive $ARCHIVE_ZIP ..."
 rm -f "$ARCHIVE_ZIP"
-7z a -tzip -mx=9 -mmt=on "$ARCHIVE_ZIP" "${DEST_FILES[@]}"
+# OutlastLauncher unpacks this zip itself and supports only Deflate and Store.
+7z a -tzip -mm=Deflate -mx=9 -mmt=on "$ARCHIVE_ZIP" "${DEST_FILES[@]}"
 
 echo ""
 echo "Done:"
