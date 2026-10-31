@@ -43,6 +43,9 @@ static const DWORD CONNECT_TIMEOUT_MS = 5000;
 static const DWORD RECEIVE_TIMEOUT_MS = 30000;
 static const int   DOWNLOAD_ATTEMPTS  = 3;
 
+// On Windows the console window keeps the keyboard focus, and a dialog could end up behind other windows.
+static const UINT  DIALOG_FLAGS       = MB_SETFOREGROUND | MB_TOPMOST;
+
 static const DWORD      MAX_JSON_SIZE   = 8u * 1024 * 1024;
 static const ULONGLONG  MAX_ASSET_SIZE  = 2048ull * 1024 * 1024;
 static const DWORD      MAX_ENTRY_SIZE  = 1024u * 1024 * 1024;
@@ -84,8 +87,16 @@ static bool IsCancelled()
 static void ReportProgress(UpdateStage stage, ULONGLONG done, ULONGLONG total)
 {
     InterlockedExchange(&GStage, stage);
-    if (GProgressWnd)
-        PostMessageW(GProgressWnd, WM_APP, (WPARAM)stage, total ? (LPARAM)(done * 100 / total) : 0);
+
+    // Only on a visible change: a constant stream of messages keeps the window from ever painting.
+    static LONG lastShown = -1;
+    const LONG percent = total ? (LONG)(done * 100 / total) : 0;
+    const LONG shown = (LONG)stage * 1000 + percent;
+    if (GProgressWnd && shown != lastShown)
+    {
+        lastShown = shown;
+        PostMessageW(GProgressWnd, WM_APP, (WPARAM)stage, percent);
+    }
 }
 
 // Joins path parts with '\'. Fails instead of truncating when the result does not fit.
@@ -1288,7 +1299,7 @@ static bool RestoreOriginal(LPCWSTR gameDir, const std::wstring& rel, bool hadOr
             || !MoveWithRetry(dst, trash, MOVEFILE_REPLACE_EXISTING))
             return false;
     }
-    return !hadOriginal || MoveWithRetry(bak, dst, 0);
+    return !hadOriginal || (CreateParentDirs(dst) && MoveWithRetry(bak, dst, 0));
 }
 
 static bool WriteApplyMarker(LPCWSTR gameDir)
@@ -1473,7 +1484,11 @@ static LRESULT CALLBACK ProgressWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPAR
             default:             wcscpy(text, L"Installing, please do not close..."); break;
             }
             text[ARRAYSIZE(text) - 1] = L'\0';
-            if (!GCancel) SetDlgItemTextW(hWnd, 1, text);
+            if (!GCancel)
+            {
+                SetDlgItemTextW(hWnd, 1, text);
+                UpdateWindow(hWnd);
+            }
         }
         return 0;
 
@@ -1510,6 +1525,7 @@ static HWND CreateProgressWindow()
     SendMessageW(hText, WM_SETFONT, (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
     ShowWindow(hWnd, SW_SHOW);
+    UpdateWindow(hWnd);
     return hWnd;
 }
 
@@ -1652,7 +1668,7 @@ bool Updater_Run(LPCWSTR gameDir, LPCWSTR exePath)
             L"Close the game if it is running and start the launcher again, or verify the game files in Steam.",
             GError);
         msg[ARRAYSIZE(msg) - 1] = L'\0';
-        MessageBoxW(NULL, msg, UPDATE_TITLE, MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, msg, UPDATE_TITLE, MB_OK | MB_ICONERROR | DIALOG_FLAGS);
         return false;
     }
     DeleteDirTree(updateDir);
@@ -1672,7 +1688,7 @@ bool Updater_Run(LPCWSTR gameDir, LPCWSTR exePath)
         L"Download and install now?",
         CURRENT_VERSION, info.tag);
     msg[ARRAYSIZE(msg) - 1] = L'\0';
-    if (MessageBoxW(NULL, msg, UPDATE_TITLE, MB_YESNO | MB_ICONQUESTION) != IDYES)
+    if (MessageBoxW(NULL, msg, UPDATE_TITLE, MB_YESNO | MB_ICONQUESTION | DIALOG_FLAGS) != IDYES)
         return false;
 
     GError[0] = L'\0';
@@ -1704,7 +1720,7 @@ bool Updater_Run(LPCWSTR gameDir, LPCWSTR exePath)
         _snwprintf(msg, ARRAYSIZE(msg) - 1, L"Update installed, but the new launcher did not start (error %lu).",
             GetLastError());
         msg[ARRAYSIZE(msg) - 1] = L'\0';
-        MessageBoxW(NULL, msg, UPDATE_TITLE, MB_OK | MB_ICONWARNING);
+        MessageBoxW(NULL, msg, UPDATE_TITLE, MB_OK | MB_ICONWARNING | DIALOG_FLAGS);
         return false;
     }
 
@@ -1716,7 +1732,7 @@ bool Updater_Run(LPCWSTR gameDir, LPCWSTR exePath)
         WCHAR text[ARRAYSIZE(GError) + 128];
         _snwprintf(text, ARRAYSIZE(text) - 1, L"Update failed:\n\n%s\n\nThe game will start with the current version.", GError);
         text[ARRAYSIZE(text) - 1] = L'\0';
-        MessageBoxW(NULL, text, UPDATE_TITLE, MB_OK | MB_ICONERROR);
+        MessageBoxW(NULL, text, UPDATE_TITLE, MB_OK | MB_ICONERROR | DIALOG_FLAGS);
     }
     return false;
 }

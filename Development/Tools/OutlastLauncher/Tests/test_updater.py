@@ -282,6 +282,12 @@ def test_apply(h, base):
     check("crash-recovery", rc == 0 and live == want, f"{out} {live}")
     check("crash-recovery-clears-marker", not os.path.exists(os.path.join(game, "OpenOL_Update", marker)))
 
+    # The folder of a backed-up file is gone: it has to be created again.
+    game = new_game(base, "recover_nodir")
+    seed(game, {"OpenOL_Update/backup/gone/sub/b.txt": b"old b", "OpenOL_Update/" + marker: b"1"})
+    rc, out = h.run("recover", winpath(game))
+    check("crash-recovery-missing-folder", rc == 0 and tree(game).get("gone/sub/b.txt") == b"old b", out)
+
     # No marker: the install committed, so a leftover backup must not be restored.
     game = new_game(base, "recover_none")
     seed(game, {"a.txt": b"new a", "OpenOL_Update/backup/a.txt": b"old a"})
