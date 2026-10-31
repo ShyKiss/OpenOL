@@ -681,6 +681,140 @@ class RelayTest(unittest.TestCase):
         self.assert_alive(a)
         raw.close()
 
+    # --- Headless simulator ---
+
+    def sim_node(self):
+        node = self.client(enter=False)
+        node.send(P["CH_SESS"], P["SESS_SIM_HELLO"])
+        return node
+
+    @staticmethod
+    def owner_is(player_id):
+        return lambda d: (d[0] == P["CH_SESS"] and d[1] == P["SESS_SIM_OWNER"]
+                          and struct.unpack_from("<I", d, 6)[0] == player_id)
+
+    def test_sim_waits_for_a_world_then_owns_it(self):
+        node = self.sim_node()
+        node.enter()  # no world yet: must not create one
+        time.sleep(0.1)
+        a = self.client(enter=False)
+        a.enter()
+        travel = node.wait_for(sess("SESS_TRAVEL"))
+        self.assertEqual(world_msg(travel)[1:], ("CP_A", "MapA"))
+        a.wait_for(self.owner_is(node.player_id))
+        node.enter(epoch=world_msg(travel)[0])
+        node.wait_for(sess("SESS_BASELINE_END"))
+
+    def test_sim_is_sent_to_running_world(self):
+        a = self.client()
+        node = self.sim_node()
+        self.assertEqual(world_msg(node.wait_for(sess("SESS_TRAVEL")))[1:], ("CP_A", "MapA"))
+        # Passive until the owner goes away: taking over now would restart every enemy.
+        node.enter(epoch=1)
+        node.wait_for(sess("SESS_BASELINE_END"))
+        self.assertFalse([d for d in a.recv_all(0.2) if self.owner_is(node.player_id)(d)])
+
+    def test_sim_never_changes_the_world(self):
+        a = self.client()
+        node = self.sim_node()
+        epoch = world_msg(node.wait_for(sess("SESS_TRAVEL")))[0]
+        node.enter(cp="CP_B", persist="MapB", epoch=0, reset=True)
+        # Refused and sent back, while the player hears nothing.
+        self.assertEqual(world_msg(node.wait_for(sess("SESS_TRAVEL")))[:1], (epoch,))
+        node.enter(epoch=epoch)
+        node.wait_for(sess("SESS_BASELINE_END"))
+        node.send(P["CH_SESS"], P["SESS_CHECKPOINT"], wstr("CP_Z") + wstr("MapA"))
+        time.sleep(0.1)
+        b = self.client(enter=False)
+        b.enter()
+        self.assertEqual(world_msg(b.wait_for(sess("SESS_WORLD")))[1], "CP_A")
+        self.assert_alive(a)
+
+    def test_sim_does_not_count_as_player_in_world(self):
+        a = self.client()
+        node = self.sim_node()
+        epoch = world_msg(node.wait_for(sess("SESS_TRAVEL")))[0]
+        node.enter(epoch=epoch)
+        node.wait_for(sess("SESS_BASELINE_END"))
+        a.send(P["CH_SESS"], P["SESS_LEAVE"])
+        time.sleep(0.1)
+        # Alone apart from the simulator: this player moves the world, and the simulator follows.
+        a.enter(cp="CP_B", persist="MapB")
+        self.assertEqual(world_msg(a.wait_for(sess("SESS_WORLD")))[1:], ("CP_B", "MapB"))
+        self.assertEqual(world_msg(node.wait_for(sess("SESS_TRAVEL")))[1:], ("CP_B", "MapB"))
+
+    def test_sim_is_invisible_to_players(self):
+        a = self.client()
+        node = self.sim_node()
+        epoch = world_msg(node.wait_for(sess("SESS_TRAVEL")))[0]
+        node.enter(epoch=epoch)
+        node.wait_for(sess("SESS_BASELINE_END"))
+        a.recv_all(0.1)
+        node.send(P["CH_HERO"], P["HERO_STATE"], b"\0" * 40)
+        node.send(P["CH_HERO"], P["HERO_NICK"], b"\x03Sim")
+        node.send(P["CH_DOOR"], P["DOOR_STATE"], b"\0" * 20)
+        node.send(P["CH_SESS"], P["SESS_LEAVE"])
+        got = a.recv_all(0.2)
+        for d in got:
+            self.assertNotEqual(struct.unpack_from("<I", d, 2)[0], node.player_id, d[:8])
+            self.assertFalse(sess("SESS_PLAYER_LEFT")(d))
+
+    def test_sim_enemies_and_player_events_reach_players(self):
+        a = self.client(enter=False)
+        node = self.sim_node()
+        a.enter()
+        epoch = world_msg(node.wait_for(sess("SESS_TRAVEL")))[0]
+        node.enter(epoch=epoch)
+        node.wait_for(sess("SESS_BASELINE_END"))
+        node.send(P["CH_ENEMY"], P["ENEMY_SPAWN"], enemy(b"Bot1"))
+        a.wait_for(lambda d: d[0] == P["CH_ENEMY"] and d[1] == P["ENEMY_SPAWN"])
+        node.send(P["CH_HERO"], P["HERO_PLAYER_EVENT"], struct.pack("<I", a.player_id) + b"\x01")
+        a.wait_for(lambda d: d[0] == P["CH_HERO"] and d[1] == P["HERO_PLAYER_EVENT"])
+
+    def test_sim_not_counted_online(self):
+        a = self.client()
+        a.recv_all(0.1)
+        self.sim_node()
+        time.sleep(0.1)
+        # It counts only until it identifies itself, which happens right after connecting.
+        counts = [d for d in a.recv_all(0.1) if d[0] == P["SRV_ONLINE_COUNT"]]
+        self.assertEqual(struct.unpack_from("<I", counts[-1], 5)[0], 1)
+
+    def test_owner_falls_back_to_player_when_sim_disconnects(self):
+        a = self.client(enter=False)
+        node = self.sim_node()
+        a.enter()
+        epoch = world_msg(node.wait_for(sess("SESS_TRAVEL")))[0]
+        node.enter(epoch=epoch)
+        node.wait_for(sess("SESS_BASELINE_END"))
+        a.wait_for(self.owner_is(node.player_id))
+        node.send(P["CH_WORLD"], P["WORLD_DISCONNECT"])
+        a.wait_for(self.owner_is(a.player_id))
+
+    def test_sim_takes_over_from_dying_player(self):
+        a = self.client()
+        b = self.client()
+        node = self.sim_node()
+        epoch = world_msg(node.wait_for(sess("SESS_TRAVEL")))[0]
+        node.enter(epoch=epoch)
+        node.wait_for(sess("SESS_BASELINE_END"))
+        a.send(P["CH_HERO"], P["HERO_PLAYER_LIFECYCLE"], b"\0")
+        b.wait_for(self.owner_is(node.player_id))
+
+    def test_room_without_players_drops_world_for_sim(self):
+        node = self.sim_node()
+        a = self.client(enter=False)
+        a.enter()
+        first = world_msg(node.wait_for(sess("SESS_TRAVEL")))[0]
+        node.enter(epoch=first)
+        node.wait_for(sess("SESS_BASELINE_END"))
+        a.send(P["CH_WORLD"], P["WORLD_DISCONNECT"])
+        time.sleep(0.2)
+        b = self.client(enter=False)
+        b.enter()
+        # Same map, yet a fresh world: nobody is left to preserve the old one for.
+        self.assertGreater(world_msg(node.wait_for(sess("SESS_TRAVEL")))[0], first)
+
     def test_fuzz_authenticated_packets(self):
         # Valid header from a real session, so the payload reaches every parser.
         rng = random.Random(5678)

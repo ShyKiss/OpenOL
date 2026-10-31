@@ -126,7 +126,8 @@ static UBOOL ApplyTravel()
             SendSessionEnter(0, Checkpoint);
         return TRUE;
     }
-    if (Checkpoint == CurrentCheckpointName() && Persist == PersistentLevelOf(Checkpoint))
+    // A player may stay where it is, but the simulator's enemies belong to the old world.
+    if (!GIsSimNode && Checkpoint == CurrentCheckpointName() && Persist == PersistentLevelOf(Checkpoint))
     {
         GMpConn.TravelCheckpoint = TEXT("");
         SendSessionEnter(0, Checkpoint);
@@ -272,6 +273,9 @@ void AMultiplayerController::NativeDestroyed()
     extern void EnemyChannel_ResetSession();
     DoorChannel_ResetSession();
     EnemyChannel_ResetSession();
+    extern APlayerController* GHeadlessController;
+    if (GHeadlessController == this)
+        GHeadlessController = NULL;
     GMultiplayerController            = NULL;
     GMultiplayerHero                  = NULL;
     GHeroChannelTicker.Channel        = NULL;
@@ -286,6 +290,8 @@ void AMultiplayerController::NativeDestroyed()
 void AMultiplayerController::NativeSetHero(AOLHero* Hero)
 {
     GMultiplayerHero = Hero;
+    if (Hero && GIsSimNode)
+        SimNode_OnHeroSpawned(Hero);
     if (!Hero || !IsConnected())
         return;
     if (GMpConn.bTravelPending && ApplyTravel())
@@ -356,6 +362,13 @@ void AMultiplayerController::OnConnected()
     GMpConn.WorldEpoch = 0;
     GMpConn.SimOwnerID = 0;
     GMpConn.bSkipNextEnter = FALSE;
+    if (GIsSimNode)
+    {
+        // Goes to the world the server names rather than reporting its own.
+        BYTE Hello[2] = { CH_SESS, SESS_SIM_HELLO };
+        GMpConn.SendBinary(Hello, 2);
+        return;
+    }
     if (GMultiplayerHero)
         SendSessionEnter(0, CurrentCheckpointName());
 }

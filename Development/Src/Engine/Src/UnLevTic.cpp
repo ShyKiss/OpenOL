@@ -107,6 +107,7 @@ extern UBOOL GShouldLogOutAFrameOfSkelCompLODs;
 extern UBOOL GShouldLogOutAFrameOfSkelMeshLODs;
 extern UBOOL GShouldLogOutAFrameOfFaceFXDebug;
 extern UBOOL GShouldLogOutAFrameOfFaceFXBones;
+extern APlayerController* GHeadlessController;
 
 /*-----------------------------------------------------------------------------
 	FTickableObject implementation.
@@ -2777,6 +2778,12 @@ void UWorld::ProcessLevelStreamingVolumes(FVector* OverrideViewLocation)
 		return;
 	}
 
+	// The simulator keeps every level loaded: the players it serves can be anywhere.
+	if (GHeadlessController)
+	{
+		return;
+	}
+
 	SCOPE_CYCLE_COUNTER( STAT_VolumeStreamingTickTime );
 
 	// Begin by assembling a list of kismet streaming objects that have non-EditorPreVisOnly volumes associated with them.
@@ -3445,7 +3452,8 @@ void UWorld::Tick( ELevelTick TickType, FLOAT DeltaSeconds )
 			APlayerController* PC = C->GetAPlayerController();
 			AOLPlayerController* OLPC = Cast<AOLPlayerController>(C);
 
-			if (OLPC && OLPC->HeroPawn && !OLPC->HeroPawn->bIsDummyPawn)
+			// The simulator's hero has no camera: nobody looks through it.
+			if (OLPC && OLPC != GHeadlessController && OLPC->HeroPawn && !OLPC->HeroPawn->bIsDummyPawn)
 			{
 				OLPC->HeroPawn->UpdateCamera(DeltaSeconds);
 			}

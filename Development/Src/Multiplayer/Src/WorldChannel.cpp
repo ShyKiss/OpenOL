@@ -152,6 +152,16 @@ static USeqEvent_Touch* FindTouchEvent(const FString& EventPath)
         UObject::StaticFindObject(USeqEvent_Touch::StaticClass(), NULL, *EventPath, FALSE));
 }
 
+// The simulator holds triggers it cannot run yet back until its levels are in.
+void SimNode_ApplyTrigger(AMultiplayerController* Ctrl, const FString& EventPath)
+{
+    USeqEvent_Touch* TouchEvent = FindTouchEvent(EventPath);
+    if (TouchEvent)
+        ApplyRemoteTrigger(Ctrl, TouchEvent);
+    else
+        debugf(NAME_Log, TEXT("[SimNode] Trigger not in this world: %s"), *EventPath);
+}
+
 // Set while activating an event the server has already accepted.
 static UBOOL GApplyingTriggerCommit = FALSE;
 
@@ -478,6 +488,7 @@ void UWorldChannel::OnBinaryWorldPacket(INT SenderID, BYTE PktType, BYTE* Data, 
         if (DataLen >= 3 && ReadWorldString(Data, DataLen, 1, Str))
         {
             USeqEvent_Touch* TouchEvent = FindTouchEvent(Str);
+            if (GIsSimNode && SimNode_DeferTrigger(TouchEvent, Str)) break;
             if (!TouchEvent) break;
             if (SenderID != GMpConn.LocalPlayerID)
             {

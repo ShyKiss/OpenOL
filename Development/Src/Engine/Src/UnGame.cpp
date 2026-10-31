@@ -2567,7 +2567,8 @@ UBOOL UGameEngine::LoadMap( const FURL& URL, UPendingLevel* Pending, FString& Er
 
 	// Listen for clients.
 	UBOOL bHadListenError = FALSE;
-	if (Pending == NULL && (Client == NULL || URL.HasOption(TEXT("Listen"))))
+	// The simulator talks to the relay only, and runs as standalone like the game it stands in for.
+	if (Pending == NULL && (Client == NULL || URL.HasOption(TEXT("Listen"))) && !ParseParam(appCmdLine(), TEXT("simnode")))
 	{
 		FString Error2;
 		if (!GWorld->Listen(URL, Error2))

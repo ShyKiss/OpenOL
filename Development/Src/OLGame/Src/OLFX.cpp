@@ -412,8 +412,8 @@ void UOLFXManager::SetEffectVisibility(FName effectName, UBOOL bVisible)
 	AOLPlayerController* OLPC = Utils::GetOLPC();
 	check(OLPC);
 	ULocalPlayer* LP = Cast<ULocalPlayer>(OLPC->Player);
-	check(LP);
-	UPostProcessChain* ppsChain = LP->GetPostProcessChain(0);
+	// The simulator has no local player and nothing to show.
+	UPostProcessChain* ppsChain = LP ? LP->GetPostProcessChain(0) : NULL;
 	
 	if (ppsChain)
 	{
@@ -852,8 +852,7 @@ void UOLInterpTrackPPSEffectParam::UpdateTrack(FLOAT NewPosition, UInterpTrackIn
 		if (EffectName != NAME_None && GIsGame && Utils::GetOLPC())
 		{
 			ULocalPlayer* LP = Cast<ULocalPlayer>(Utils::GetOLPC()->Player);
-			check(LP);
-			UPostProcessChain* ppsChain = LP->GetPostProcessChain(0);
+			UPostProcessChain* ppsChain = LP ? LP->GetPostProcessChain(0) : NULL;
 
 			if (ppsChain)
 			{
@@ -907,8 +906,7 @@ void UOLInterpTrackInstPPSEffectParam::SaveActorState(UInterpTrack* Track)
 		if (ParamTrack->EffectName != NAME_None && GIsGame && Utils::GetOLPC())
 		{
 			ULocalPlayer* LP = Cast<ULocalPlayer>(Utils::GetOLPC()->Player);
-			check(LP);
-			UPostProcessChain* ppsChain = LP->GetPostProcessChain(0);
+			UPostProcessChain* ppsChain = LP ? LP->GetPostProcessChain(0) : NULL;
 
 			if (ppsChain)
 			{
@@ -945,8 +943,7 @@ void UOLInterpTrackInstPPSEffectParam::RestoreActorState(UInterpTrack* Track)
 		if (ParamTrack->EffectName != NAME_None && GIsGame && Utils::GetOLPC())
 		{
 			ULocalPlayer* LP = Cast<ULocalPlayer>(Utils::GetOLPC()->Player);
-			check(LP);
-			UPostProcessChain* ppsChain = LP->GetPostProcessChain(0);
+			UPostProcessChain* ppsChain = LP ? LP->GetPostProcessChain(0) : NULL;
 			if (ppsChain)
 			{
 				UPostProcessEffect* effect = ppsChain->FindPostProcessEffect(ParamTrack->EffectName);

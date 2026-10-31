@@ -599,7 +599,7 @@
     <ClCompile Include="..\Multiplayer\Src\WorldChannel.cpp" />
     <ClCompile Include="..\Multiplayer\Src\MultiplayerHUD.cpp" />
     <ClCompile Include="..\Multiplayer\Src\RelayThread.cpp" />
-    <ClCompile Include="..\Multiplayer\Src\SimTest.cpp" />
+    <ClCompile Include="..\Multiplayer\Src\SimNode.cpp" />
     <ClCompile Include="..\Multiplayer\Src\P2PBridge.cpp" />
     <ClCompile Include="..\TASGame\Src\TASPlayerController.cpp" />
   </ItemGroup>

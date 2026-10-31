@@ -183,6 +183,11 @@ public:
 extern FMpConnection  GMpConn;
 extern FResolveInfo*  GResolveInfo;
 
+// Headless process that runs enemy AI for a room (-simnode, see SimNode.cpp).
+extern UBOOL GIsSimNode;
+void SimNode_OnHeroSpawned(AOLHero* Hero);
+UBOOL SimNode_DeferTrigger(class USeqEvent_Touch* TouchEvent, const FString& EventPath);
+
 // Registered as FTickableObject after engine init (in NativeInit).
 // Forwards Tick to GMpConn so the global singleton doesn't self-register at static init time.
 class FMpConnectionTicker : public FTickableObject
@@ -190,7 +195,8 @@ class FMpConnectionTicker : public FTickableObject
 public:
     virtual void  Tick(FLOAT DeltaTime)        { GMpConn.Tick(DeltaTime); }
     virtual UBOOL IsTickable() const           { return TRUE; }
-    virtual UBOOL IsTickableWhenPaused() const { return FALSE; }
+    // The simulator pauses while loading a checkpoint and must not drop off the room for it.
+    virtual UBOOL IsTickableWhenPaused() const { return GIsSimNode; }
 };
 
 // Global channel context — set by MultiplayerController::NativeInit each map load.
