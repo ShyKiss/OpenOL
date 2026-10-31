@@ -1,7 +1,7 @@
 #!/bin/bash
 # Release flow for OpenOL. The version lives in OutlastLauncher/Version.h.
 #
-#   release.sh bump patch|minor|major [--rc]  raise the version and commit (on a work branch)
+#   release.sh bump patch|minor|major [--rc]  raise the version and commit
 #   release.sh bump rc|final|X.Y.Z[-rcN]      next release candidate, or the final version of the current one
 #   release.sh --dry-run [--skip-build]       run all checks, build and verify; change nothing remotely
 #   release.sh draft                          build, verify, push the tag, upload a draft release
@@ -9,7 +9,7 @@
 #   release.sh build-archives                 build and package only (for CI, needs no git)
 #   release.sh upload-draft <dir>             verify the archives in <dir> and upload a draft (for CI)
 #
-# The usual order: bump on a work branch, merge to main, dry-run, draft, try the draft, publish.
+# The usual order: bump, get it onto main and push, dry-run, draft, try the draft, publish.
 # A release candidate (X.Y.Z-rcN) can be drafted from any pushed branch. It is published as a
 # prerelease, so only people who installed a candidate by hand are offered newer ones.
 set -euo pipefail
@@ -106,11 +106,12 @@ cmd_bump() {  # $1 = patch|minor|major|rc|final|X.Y.Z[-rcN], $2 = --rc
     fi
 
     version_gt "$next" "$current" || die "$next is not higher than the current $current"
-    [[ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]] || die "On main: bump on a work branch, then merge it."
+    local on_main=()
+    if [[ "$(git rev-parse --abbrev-ref HEAD)" == "main" ]]; then on_main=(--main); fi
     [[ -z "$(git status --porcelain)" ]] || die "Commit your changes first: git_commit.sh would sweep them into the version commit."
 
     write_version "$next"
-    if ! "$TARGETS/git_commit.sh" -m "Version $next"; then
+    if ! "$TARGETS/git_commit.sh" "${on_main[@]}" -m "Version $next"; then
         write_version "$current"
         die "Could not commit the version, it stays $current."
     fi

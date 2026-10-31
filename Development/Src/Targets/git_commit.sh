@@ -5,8 +5,10 @@
 #   git_commit.sh -m "message" --push   commit, then push (submodule first)
 #   git_commit.sh --push                push only
 #   git_commit.sh --dry-run -m "..."    show what would be committed
+#   git_commit.sh --main -m "message"   allow committing on main
 #
-# Never commits to main directly: on main it stops and asks for a branch.
+# On main it stops and asks for a branch, unless --main says this is intended.
+# --push also pushes the annotated tags reachable from the pushed commits.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -18,11 +20,13 @@ MAX_FILE_BYTES=$((50 * 1024 * 1024))
 MESSAGE=""
 PUSH=0
 DRY_RUN=0
+ALLOW_MAIN=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -m) MESSAGE="$2"; shift 2 ;;
         --push) PUSH=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
+        --main) ALLOW_MAIN=1; shift ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -65,8 +69,8 @@ commit_repo() {  # $1 = repo dir
         echo "[$1] nothing to commit"
         return
     fi
-    if [[ "$(git -C "$1" rev-parse --abbrev-ref HEAD)" == "main" ]]; then
-        echo "ABORT: $1 is on main. Create a branch first." >&2
+    if [[ "$(git -C "$1" rev-parse --abbrev-ref HEAD)" == "main" ]] && (( ! ALLOW_MAIN )); then
+        echo "ABORT: $1 is on main. Create a branch first, or pass --main." >&2
         unstage "$1"
         exit 1
     fi
@@ -94,7 +98,7 @@ if [[ -n "$MESSAGE" ]]; then
 fi
 
 if (( PUSH && ! DRY_RUN )); then
-    git -C "$RELAY" push -q -u origin HEAD
-    git push -q -u origin HEAD
+    git -C "$RELAY" push -q -u --follow-tags origin HEAD
+    git push -q -u --follow-tags origin HEAD
     echo "Pushed: $(git rev-parse --abbrev-ref HEAD) (relay: $(git -C "$RELAY" rev-parse --abbrev-ref HEAD))"
 fi

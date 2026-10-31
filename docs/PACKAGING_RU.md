@@ -68,9 +68,9 @@ cd $OUTLASTSRC
 `OutlastLauncher.exe` при запуске проверяет последний релиз на GitHub и умеет его устанавливать (см. [Updater.cpp](../Development/Tools/OutlastLauncher/Updater.cpp)). Релизы выпускаются через [release.sh](../Development/Src/Targets/release.sh). Версия хранится в [Version.h](../Development/Tools/OutlastLauncher/Version.h), менять её должен только `release.sh bump`.
 
 ```bash
-# В рабочей ветке: поднять версию (patch, minor, major или X.Y.Z) и закоммитить.
+# Поднять версию (patch, minor, major или X.Y.Z) и закоммитить, на main или в рабочей ветке.
 Development/Src/Targets/release.sh bump patch
-# Влить ветку в main и запушить main, затем на main:
+# Довести её до main и запушить main, затем на main:
 Development/Src/Targets/release.sh --dry-run   # собрать и проверить всё; без коммитов, тегов и загрузок
 Development/Src/Targets/release.sh draft       # собрать, проверить, запушить тег, загрузить черновик, невидимый пользователям
 # Поправить заметки на GitHub и попробовать архив из черновика.

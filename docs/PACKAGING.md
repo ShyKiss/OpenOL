@@ -68,9 +68,9 @@ This produces `$OUTLASTSRC/PublishTemp/OpenOL.7z` (and `.zip`).
 `OutlastLauncher.exe` checks the latest GitHub release at startup and can install it (see [Updater.cpp](../Development/Tools/OutlastLauncher/Updater.cpp)). Releases are made with [release.sh](../Development/Src/Targets/release.sh). The version lives in [Version.h](../Development/Tools/OutlastLauncher/Version.h), and only `release.sh bump` should change it.
 
 ```bash
-# On a work branch: raise the version (patch, minor, major or X.Y.Z) and commit it.
+# Raise the version (patch, minor, major or X.Y.Z) and commit it, on main or on a work branch.
 Development/Src/Targets/release.sh bump patch
-# Merge the branch into main and push main, then, on main:
+# Get it onto main and push main, then, on main:
 Development/Src/Targets/release.sh --dry-run   # build and check everything; nothing is committed, tagged or uploaded
 Development/Src/Targets/release.sh draft       # build, check, push the tag, upload a draft that users cannot see
 # Edit the release notes on GitHub and try the archive from the draft.
