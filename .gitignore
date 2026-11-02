@@ -25,6 +25,7 @@
 !/Development/Src/Multiplayer/Tests/
 !/Development/Src/Multiplayer/*.md
 /Development/Src/Multiplayer/ARCHITECTURE*.md
+/Development/Src/Multiplayer/GIT_AND_HEADLESS.md
 !/Development/Src/Multiplayer/server
 !/Development/Src/TASGame/
 !/Development/Src/Targets/
