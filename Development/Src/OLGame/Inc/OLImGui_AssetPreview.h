@@ -45,12 +45,17 @@ struct FOLPreviewInstance
     void AttachWeaponToBone(UStaticMesh* Mesh, const char* BoneName);
     void SetStaticMesh(UStaticMesh* Mesh);
     void SetStaticMeshMaterial(INT Slot, UMaterialInterface* Mat);
+    // Force a scalar material parameter on the skeletal mesh to a constant. Each element gets its own
+    // preview-only MaterialInstanceConstant, so the shared game materials are not changed.
+    // Call after SetSkeletalMesh / SetSkeletalMeshWithAnim, because a new mesh resets the materials.
+    void SetSkeletalScalarOverride(const char* ParamName, float Value);
 
     // Re-render and update the texture. Call each game tick.
     void Tick(float YawDeg, float FOVDeg);
 
     // Throttle rendering to every N game ticks (1 = every frame, default).
     // Animation still advances every tick; only GPU work is skipped.
+    // A newly set mesh is rendered on the next tick, whatever the interval.
     void SetRenderInterval(int N);
 
     // Returns D3D9 texture ready for ImGui::Image, or NULL. Safe from render thread.

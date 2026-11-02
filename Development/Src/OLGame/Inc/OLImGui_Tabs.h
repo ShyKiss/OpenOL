@@ -165,6 +165,7 @@ struct FHubEnemyMesh
     const char*    AnimSetPkg;
     const char*    AnimSetObj;
     const char*    IdleAnim;
+    int            Idx;      // index into the Enemies tab name table
 };
 bool OLSpawns_Enemies_GetRandomMesh(FHubEnemyMesh& Out); // random enemy for hub tile preview
 void OLSpawns_TickHubPreviews();      // tick enemy + door + prop hub tile previews
@@ -190,6 +191,9 @@ void OLImGui_Checkpoints_Tick();      // call from game-thread ticker
 // Asset preview — OLImGui_AssetPreview.cpp / OLImGui_AssetPreview.h
 // ---------------------------------------------------------------------------
 #include "OLImGui_AssetPreview.h"
+
+// Per-enemy fixes for a preview instance that shows the enemy's mesh (call after the mesh is set).
+void OLSpawns_Enemies_ApplyPreviewOverrides(FOLPreviewInstance& Inst, int EnemyIdx);
 
 extern void* volatile GOLPreviewPendingAttachMesh;
 extern int   volatile GOLPreviewPendingAttachSlot;

@@ -123,6 +123,7 @@ static void OnEnemyMeshLoaded(UObject* Result, void* UserData)
         const bool bWeapon = (GSpawnWeaponIdx > 0) && (E.AnimSetWeaponObject != NULL);
         const char* AnimSetObj = bWeapon ? E.AnimSetWeaponObject : E.AnimSetObject;
         GPreviewMain.SetSkeletalMeshWithAnim(M, E.AnimSetPackage, AnimSetObj, E.IdleAnim);
+        OLSpawns_Enemies_ApplyPreviewOverrides(GPreviewMain, Idx);
         GPreviewLoadedIdx  = Idx;
         GWeaponAttachedIdx = -1;
     }
@@ -133,6 +134,7 @@ static void OnEnemyMeshLoaded(UObject* Result, void* UserData)
             GEnemyMeshTable[Idx].AnimSetPackage,
             GEnemyMeshTable[Idx].AnimSetObject,
             GEnemyMeshTable[Idx].IdleAnim);
+        OLSpawns_Enemies_ApplyPreviewOverrides(GPreviewHover, Idx);
     }
 }
 
@@ -170,8 +172,18 @@ static void LoadAndSetPreviewMesh()
     const bool bWeapon = (GSpawnWeaponIdx > 0) && (E.AnimSetWeaponObject != NULL);
     const char* AnimSetObj = bWeapon ? E.AnimSetWeaponObject : E.AnimSetObject;
     GPreviewMain.SetSkeletalMeshWithAnim(Mesh, E.AnimSetPackage, AnimSetObj, E.IdleAnim);
+    OLSpawns_Enemies_ApplyPreviewOverrides(GPreviewMain, Idx);
     GPreviewLoadedIdx  = Idx;
     GWeaponAttachedIdx = -1;
+}
+
+// NanoCloud is hidden unless its live actor drives the "Swarm" opacity (AOLEnemyNanoCloud::UpdateVisibleComponents).
+// The preview has no actor, so that value stays at 0. Force it to 1 on the preview's own material instances.
+void OLSpawns_Enemies_ApplyPreviewOverrides(FOLPreviewInstance& Inst, int EnemyIdx)
+{
+    if (EnemyIdx < 0 || EnemyIdx >= (int)ARRAY_COUNT(GEnemyNames)) return;
+    if (appStrcmpANSI(GEnemyNames[EnemyIdx], "NanoCloud") == 0)
+        Inst.SetSkeletalScalarOverride("Swarm", 1.0f);
 }
 
 // Load a random enemy into Out using the shared mesh cache. Returns false if still loading.
@@ -190,6 +202,7 @@ bool OLSpawns_Enemies_GetRandomMesh(FHubEnemyMesh& Out)
     Out.AnimSetPkg = GEnemyMeshTable[Idx].AnimSetPackage;
     Out.AnimSetObj = GEnemyMeshTable[Idx].AnimSetObject;
     Out.IdleAnim   = GEnemyMeshTable[Idx].IdleAnim;
+    Out.Idx        = Idx;
     return true;
 }
 

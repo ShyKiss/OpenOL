@@ -115,7 +115,11 @@ static bool DrawTile(const char* id, ImTextureID img, const char* label, float R
 static FOLPreviewInstance GHubEnemyPreview;
 static FOLPreviewInstance GHubDoorPreview;
 static FOLPreviewInstance GHubPropPreview;
-static bool               GHubPreviewsLoaded = false; // set after first load attempt
+// Each tile keeps retrying until its asset is ready. Enemy meshes load async and the prop list
+// fills in from the background scan, so the first open can run before either one is available.
+static bool               GHubEnemySet = false;
+static bool               GHubDoorSet  = false;
+static bool               GHubPropSet  = false;
 
 // Lighting and Fog have no representative UStaticMesh to render a live 3D preview
 // from, so their tiles use static images instead (same FOLImageLoader used by the
@@ -144,13 +148,20 @@ void OLSpawns_TickHubPreviews()
     if (!GHubDoorPreview.IsInited())  GHubDoorPreview.Init();
     if (!GHubPropPreview.IsInited())  GHubPropPreview.Init();
 
-    if (!GHubPreviewsLoaded)
+    // Each tile picks a random asset once it is ready, then stops retrying.
+    if (!GHubEnemySet)
     {
-        // Enemy — random from table using shared mesh cache.
         FHubEnemyMesh EM;
         if (OLSpawns_Enemies_GetRandomMesh(EM))
+        {
             GHubEnemyPreview.SetSkeletalMeshWithAnim(EM.Mesh, EM.AnimSetPkg, EM.AnimSetObj, EM.IdleAnim);
+            OLSpawns_Enemies_ApplyPreviewOverrides(GHubEnemyPreview, EM.Idx);
+            GHubEnemySet = true;
+        }
+    }
 
+    if (!GHubDoorSet)
+    {
         // Door — random non-Undefined type from CDO's DoorMeshData table.
         AOLDoor* CDO = Cast<AOLDoor>(AOLDoor::StaticClass()->GetDefaultObject());
         if (CDO)
@@ -163,19 +174,23 @@ void OLSpawns_TickHubPreviews()
             {
                 int Pick = ValidIdx(appRand() % ValidIdx.Num());
                 GHubDoorPreview.SetStaticMesh(CDO->DoorMeshData[Pick].NormalData.MainMesh);
+                // Static meshes don't change — render every 30 frames to save GPU time.
+                GHubDoorPreview.SetRenderInterval(30);
+                GHubDoorSet = true;
             }
         }
+    }
 
-        // Prop — random mesh from the scanned list (may be empty before scan completes).
+    if (!GHubPropSet)
+    {
+        // Prop — random mesh from the scanned list (empty until the scan completes).
         UStaticMesh* PropMesh = OLSpawns_Props_GetRandomMesh();
         if (PropMesh)
+        {
             GHubPropPreview.SetStaticMesh(PropMesh);
-
-        // Static meshes don't change — render every 30 frames to save GPU time.
-        GHubDoorPreview.SetRenderInterval(30);
-        GHubPropPreview.SetRenderInterval(30);
-
-        GHubPreviewsLoaded = true;
+            GHubPropPreview.SetRenderInterval(30);
+            GHubPropSet = true;
+        }
     }
 
     if (!OLSpawns_IsHubVisible())
@@ -193,7 +208,9 @@ bool OLSpawns_IsFogTabActive()   { return GSpawnsSubTab == OLImGui_TabSpawns_Fog
 // Called from D3D9Drv on overlay open — next tick picks a new random asset.
 void OLSpawns_ResetHubPreviews()
 {
-    GHubPreviewsLoaded = false;
+    GHubEnemySet = false;
+    GHubDoorSet  = false;
+    GHubPropSet  = false;
 }
 
 void OLSpawns_ShutdownHubPreviews()
@@ -201,7 +218,7 @@ void OLSpawns_ShutdownHubPreviews()
     GHubEnemyPreview.Shutdown();
     GHubDoorPreview.Shutdown();
     GHubPropPreview.Shutdown();
-    GHubPreviewsLoaded = false;
+    OLSpawns_ResetHubPreviews();
 }
 
 // ---------------------------------------------------------------------------

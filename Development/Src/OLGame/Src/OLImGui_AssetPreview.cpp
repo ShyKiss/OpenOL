@@ -214,6 +214,7 @@ struct FOLPreviewInstance::FImpl
     // Render throttle: re-render only every RenderInterval ticks.
     int                      TicksSinceRender;
     int                      RenderInterval;   // 1 = every frame, N = every N frames
+    bool                     bRenderNow;       // set when a new mesh is shown; bypasses the interval once
 
     FImpl()
         : Scene(NULL), SkeletalComp(NULL), StaticComp(NULL)
@@ -225,7 +226,7 @@ struct FOLPreviewInstance::FImpl
         , ChromaTexture(NULL)
         , WeaponComp(NULL), bWeaponAttached(false)
         , AnimNode(NULL)
-        , TicksSinceRender(0), RenderInterval(1)
+        , TicksSinceRender(0), RenderInterval(1), bRenderNow(false)
     {
         for (int i = 0; i < OL_PREVIEW_MAX_ATTACHMENTS; ++i)
         {
@@ -457,6 +458,9 @@ void FOLPreviewInstance::SetSkeletalMesh(USkeletalMesh* Mesh)
     if (!Impl || !Impl->Scene || !Impl->SkeletalComp) return;
     FImpl& I = *Impl;
     I.RemoveAll();
+    // Drop per-element overrides (e.g. the NanoCloud "Swarm" MICs) left by the previous mesh.
+    // GetMaterial prefers these over the new mesh's own materials, so they would leak onto it.
+    I.SkeletalComp->Materials.Empty();
     if (!Mesh) return;
 
     I.SkeletalComp->SetSkeletalMesh(Mesh);
@@ -466,6 +470,7 @@ void FOLPreviewInstance::SetSkeletalMesh(USkeletalMesh* Mesh)
     I.SkeletalComp->UpdateBounds();
     ForceStreamMeshTextures(I.SkeletalComp);
     I.PreviewType = PT_Skeletal;
+    I.bRenderNow = true;
 }
 
 void FOLPreviewInstance::ApplyAnimSet(UAnimSet* AnimSet, const char* IdleAnimName)
@@ -545,6 +550,25 @@ void FOLPreviewInstance::SetStaticMeshMaterial(INT Slot, UMaterialInterface* Mat
     ForceStreamMeshTextures(Impl->StaticComp);
 }
 
+void FOLPreviewInstance::SetSkeletalScalarOverride(const char* ParamName, float Value)
+{
+    if (!Impl || !Impl->SkeletalComp || !Impl->SkeletalComp->SkeletalMesh || !ParamName) return;
+    FImpl& I = *Impl;
+
+    for (INT i = 0; i < I.SkeletalComp->GetNumElements(); ++i)
+    {
+        UMaterialInterface* Base = I.SkeletalComp->GetMaterial(i);
+        if (!Base) continue;
+
+        UMaterialInstanceConstant* MIC = ConstructObject<UMaterialInstanceConstant>(
+            UMaterialInstanceConstant::StaticClass(), I.SkeletalComp);
+        MIC->SetParent(Base);
+        MIC->SetScalarParameterValue(FName(ANSI_TO_TCHAR(ParamName)), Value);
+        I.SkeletalComp->SetMaterial(i, MIC);
+    }
+    I.bRenderNow = true;
+}
+
 
 void FOLPreviewInstance::SetStaticMesh(UStaticMesh* Mesh)
 {
@@ -559,6 +583,7 @@ void FOLPreviewInstance::SetStaticMesh(UStaticMesh* Mesh)
     I.Scene->AddComponent(I.StaticComp, LocalToWorld);
     ForceStreamMeshTextures(I.StaticComp);
     I.PreviewType = PT_Static;
+    I.bRenderNow = true;
 }
 
 void FOLPreviewInstance::Tick(float YawDeg, float FOVDeg)
@@ -595,13 +620,15 @@ void FOLPreviewInstance::Tick(float YawDeg, float FOVDeg)
     }
 
     // Throttle rendering: skip the GPU work when the quota hasn't expired.
-    if (I.RenderInterval > 1)
+    // A mesh or material that was just set renders right away (bRenderNow), not after a full interval.
+    if (I.RenderInterval > 1 && !I.bRenderNow)
     {
         ++I.TicksSinceRender;
         if (I.TicksSinceRender < I.RenderInterval)
             return;
-        I.TicksSinceRender = 0;
     }
+    I.TicksSinceRender = 0;
+    I.bRenderNow = false;
 
     FTextureRenderTargetResource* RTResB = I.RTBlack->GameThread_GetRenderTargetResource();
     FTextureRenderTargetResource* RTResW = I.RTWhite->GameThread_GetRenderTargetResource();
